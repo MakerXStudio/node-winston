@@ -1,10 +1,12 @@
 # Node Winston
 
-A set of [winston](https://github.com/winstonjs/winston) [formats](https://github.com/winstonjs/winston#formats), plus console transport and logger creation functions, to simplify using winston logging using a standard config shape and with pretty coloured YAML log output for local development.
+A set of [winston](https://github.com/winstonjs/winston) [formats](https://github.com/winstonjs/winston#formats), console transport and logger creation functions.
+
+Simplifies using winston logging and provides coloured YAML log output for local development.
 
 ## Creating a Logger
 
-The `createLogger` function combines `omitFormat`, `omitNilFormat` and optionally `prettyConsoleFormat` together to configure the `Console` transport on the returned logger.
+The `createLogger` function combines `omitFormat`, `omitNilFormat` and optionally `prettyConsoleFormat` together to configure the `Console` transport for the returned logger.
 
 | Option           | Description                                                                                                                                                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -15,7 +17,7 @@ The `createLogger` function combines `omitFormat`, `omitNilFormat` and optionall
 | `omitPaths`      | Paths of fields you wish to omit form logging. For example, during local development you may wish to hide values from `defaultMeta`, e.g. user context which would be omitted in every log entry and irrelevent for local dev. |
 | `transports`     | Extra `Transport`s you wish to add to the logger.                                                                                                                                                                              |
 
-At MakerX we generally use config files to support different logging output between local development and deployed environments:
+At MakerX we generally use config files to control logging output across local development and deployed environments:
 
 logger.ts
 
@@ -34,7 +36,7 @@ const logger = createLogger({
 export default logger
 ```
 
-This would translate a few runtime scenarios.
+This would translate into different runtime configurations:
 
 ```ts
 // local development logger would be created something like...
@@ -68,11 +70,9 @@ const logger = createLogger({
 })
 ```
 
-All the above scenarios are usually config driven.
-
 ## Transports
 
-The `createLogger` method only creates a `Console` transport using the provided options plus applying some defaults.
+The `createLogger` method creates (only) a `Console` transport.
 
 If you wish to add [other transports](https://github.com/winstonjs/winston/blob/master/docs/transports.md), pass them in via the `transports` option, e.g.
 
@@ -96,7 +96,7 @@ const logger = createLogger({
 `createLogger` applies some default behaviour, chaining `omitNilFormat` and `omitFormat` in front of the final json or coloured YAML format.
 
 - `omitNilFormat` removes null or undefined values from output
-- `omitFormat` removes values by path using [lodash omit](https://lodash.com/docs/4.17.15#omit)
+- `omitFormat` removes values by path using [lodash omit](https://lodash.com/docs/4.17.15#omit) (see docs for path specification)
 - `prettyConsoleFormat` applies the `colorize` and `timestamp` formats before formatting logs as coloured YAML
 
 If you wish to add additional formats, pass them in via the `consoleFormats` option.
