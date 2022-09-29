@@ -2,7 +2,7 @@
   "name": "@makerxstudio/node-winston",
   "version": "0.0.3",
   "private": false,
-  "description": "",
+  "description": "A set of winston formats, console transport and logger creation functions",
   "author": "MakerX",
   "license": "MIT",
   "publishConfig": {
