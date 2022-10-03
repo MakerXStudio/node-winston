@@ -100,3 +100,30 @@ const logger = createLogger({
 - `prettyConsoleFormat` applies the `colorize` and `timestamp` formats before formatting logs as coloured YAML
 
 If you wish to add additional formats, pass them in via the `consoleFormats` option.
+
+### Error serialization
+
+The `Error` class's `message` and `stack` properties [are not enumerable](https://stackoverflow.com/questions/18391212/is-it-not-possible-to-stringify-an-error-using-json-stringify); the output of `JSON.stringify(new Error('message'))` is `'{}'`.
+
+Winston has some special handling, so that when an error is the first or second argument, message and stack props are logged:
+
+```ts
+logger.log(new Error('cause')) // {message: 'cause', stack: ...}
+logger.log('message', new Error('cause')) // {message: 'message cause', stack: ...}
+```
+
+However, when errors are nested in structured log data, message and stack props are lost:
+
+```ts
+catch (error) {
+  logger.log('message', { info, error }) // {message: 'message', error: {}}
+}
+```
+
+Winston [logform](https://github.com/winstonjs/logform) uses [safe-stable-stringify](https://www.npmjs.com/package/safe-stable-stringify) which supports a `replacer`, similar to `JSON.stringify`.
+
+In `createLogger` we use `serializableErrorReplacer` via the JSON format options to ensure that the `message` and `stack` properties of errors are serialized to error logs:
+
+```ts
+format.json({ replacer: serializableErrorReplacer })
+```

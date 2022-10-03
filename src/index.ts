@@ -1,10 +1,11 @@
 import { format, Format } from 'logform'
-import { Logger, LoggerOptions, createLogger as winstonCreateLogger } from 'winston'
+import { createLogger as winstonCreateLogger, Logger, LoggerOptions } from 'winston'
 import * as Transport from 'winston-transport'
 import { Console, ConsoleTransportOptions } from 'winston/lib/winston/transports'
 import { omitFormat } from './omit-format'
 import { omitNilFormat } from './omit-nil-format'
 import { prettyConsoleFormat } from './pretty-console-format'
+import { serializableErrorReplacer } from './serialize-error'
 
 export type { Logger } from 'winston'
 export * from './omit-format'
@@ -32,7 +33,9 @@ export const createConsoleTransport = ({ consoleFormat = 'json', consoleOptions,
   const options: ConsoleTransportOptions = {
     handleExceptions: false,
     ...consoleOptions,
-    format: prettyFormat ? format.combine(...formats, prettyFormat) : format.combine(format.timestamp(), ...formats, format.json()),
+    format: prettyFormat
+      ? format.combine(...formats, prettyFormat)
+      : format.combine(format.timestamp(), ...formats, format.json({ replacer: serializableErrorReplacer })),
   }
   return new Console(options)
 }
