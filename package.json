@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "@tsconfig/node16": "^1.0.3",
-    "@types/jest": "^29.5.0",
+    "@types/jest": "^29.5.2",
     "@types/lodash.isnil": "^4.0.7",
     "@types/lodash.omit": "^4.5.7",
     "@types/lodash.omitby": "^4.6.7",
