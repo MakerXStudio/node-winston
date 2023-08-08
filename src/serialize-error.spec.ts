@@ -11,7 +11,7 @@ describe('serializeError', () => {
     const { message, stack } = JSON.parse(JSON.stringify(serializeError(new Error('message')))) as { message: string; stack: string }
     expect(message).toMatchInlineSnapshot(`"message"`)
     expect(stack).toBeDefined()
-    expect(stack.split(EOL).length).toBeGreaterThan(3)
+    expect(stack.split('\n').length).toBeGreaterThan(3)
   })
   it('can serialize a custom error', () => {
     class CustomError extends Error {
@@ -29,7 +29,7 @@ describe('serializeError', () => {
     expect(message).toMatchInlineSnapshot(`"message"`)
     expect(custom).toMatchInlineSnapshot(`"custom"`)
     expect(stack).toBeDefined()
-    expect(stack.split(EOL).length).toBeGreaterThan(3)
+    expect(stack.split('\n').length).toBeGreaterThan(3)
   })
 })
 

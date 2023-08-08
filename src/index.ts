@@ -1,5 +1,5 @@
 import { format, Format } from 'logform'
-import { createLogger as winstonCreateLogger, Logger, LoggerOptions } from 'winston'
+import { createLogger as winstonCreateLogger, LoggerOptions } from 'winston'
 import * as Transport from 'winston-transport'
 import { Console, ConsoleTransportOptions } from 'winston/lib/winston/transports'
 import { omitFormat } from './omit-format'
@@ -7,9 +7,17 @@ import { omitNilFormat } from './omit-nil-format'
 import { prettyConsoleFormat } from './pretty-console-format'
 import { serializableErrorReplacer } from './serialize-error'
 
-export type { Logger } from 'winston'
 export * from './omit-format'
 export * from './omit-nil-format'
+
+export type Logger = {
+  child(options: Record<string, unknown>): Logger
+  error(message: string, ...optionalParams: unknown[]): void
+  warn(message: string, ...optionalParams: unknown[]): void
+  info(message: string, ...optionalParams: unknown[]): void
+  verbose(message: string, ...optionalParams: unknown[]): void
+  debug(message: string, ...optionalParams: unknown[]): void
+}
 
 export interface CreateLoggerOptions {
   consoleFormat?: 'pretty' | 'json'
