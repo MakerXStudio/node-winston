@@ -1,5 +1,5 @@
 import { format, Format } from 'logform'
-import { createLogger as winstonCreateLogger, LoggerOptions, Logger as WinstonLogger } from 'winston'
+import { createLogger as winstonCreateLogger, Logger as WinstonLogger, LoggerOptions } from 'winston'
 import * as Transport from 'winston-transport'
 import { Console, ConsoleTransportOptions } from 'winston/lib/winston/transports'
 import { omitFormat } from './omit-format'
@@ -10,9 +10,19 @@ import { serializableErrorReplacer } from './serialize-error'
 export * from './omit-format'
 export * from './omit-nil-format'
 
-// Remove methods that are only available for syslog
-// See https://github.com/winstonjs/winston/blob/914b846846c5970711b5cba609dfbeb42c8580a7/index.d.ts#L142-L147
-export type Logger = Omit<WinstonLogger, 'emerg' | 'alert' | 'crit' | 'warning' | 'notice'>
+export type Logger = Pick<
+  WinstonLogger,
+  // Supports child loggers
+  | 'child'
+  // Common levels
+  | 'debug'
+  | 'error'
+  | 'info'
+  | 'verbose'
+  | 'warn'
+  // General log method
+  | 'log'
+>
 
 export interface CreateLoggerOptions {
   consoleFormat?: 'pretty' | 'json'
