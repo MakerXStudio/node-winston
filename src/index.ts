@@ -24,13 +24,23 @@ export type Logger = Pick<
   | 'log'
 >
 
+// winstonjs' default levels have debug and verbose reversed, which is confusing and causes filtering issues with Seq,
+// CloudWatch etc (given they assume Verbose/Trace should be the lowest/noisiest log level)
+const levels = {
+  error: 0,
+  warn: 1,
+  info: 3,
+  debug: 4,
+  verbose: 5,
+}
+
 export interface CreateLoggerOptions {
   consoleFormat?: 'pretty' | 'json'
   transports?: Transport[]
   consoleOptions?: Omit<ConsoleTransportOptions, 'format'>
   consoleFormats?: Format[]
   omitPaths?: string[]
-  loggerOptions?: LoggerOptions
+  loggerOptions?: Omit<LoggerOptions, 'transports'>
 }
 
 export const createConsoleTransport = ({ consoleFormat = 'json', consoleOptions, consoleFormats, omitPaths }: CreateLoggerOptions) => {
@@ -61,6 +71,7 @@ export const createLogger = (options: CreateLoggerOptions): Logger => {
 
   // create logger options using supplied options + transports
   const loggerOptions: LoggerOptions = {
+    levels, // loggerOptions should still be allowed to override our defaults
     ...options.loggerOptions,
     transports,
   }
