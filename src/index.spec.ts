@@ -9,6 +9,7 @@ describe('logger', () => {
     logger.debug('test a')
     logger.verbose('test b')
     expect(transport.logs.length).toBe(1)
+    expect(transport.logs[0].message).toBe('test a')
   })
 
   it('debug logs are not screened out when level is verbose', () => {
@@ -17,6 +18,8 @@ describe('logger', () => {
     logger.debug('test a')
     logger.verbose('test b')
     expect(transport.logs.length).toBe(2)
+    expect(transport.logs[0].message).toBe('test a')
+    expect(transport.logs[1].message).toBe('test b')
   })
 })
 
