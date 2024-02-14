@@ -23,5 +23,5 @@ export const prettyConsoleFormat = (): Format =>
       const { level, timestamp, message, ...meta } = info
       const yaml = yamlify(meta)
       return `[${level}] ${colors.grey(timestamp)} ${message}${yaml}`
-    })
+    }),
   )

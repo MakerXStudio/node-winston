@@ -1,6 +1,7 @@
 import { levels } from 'logform'
 import { LEVEL, configs } from 'triple-beam'
 import { prettyConsoleFormat, yamlify } from './pretty-console-format'
+import { describe, it, expect } from 'vitest'
 
 describe('prettyConsoleFormat', () => {
   it('can be invoked', () => {

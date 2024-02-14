@@ -1,5 +1,6 @@
 import { createLogger } from './index'
 import TransportStream from 'winston-transport'
+import { describe, it, expect } from 'vitest'
 
 describe('logger', () => {
   it('verbose logs are screened out when level is debug', () => {
