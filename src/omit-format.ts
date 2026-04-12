@@ -1,6 +1,5 @@
-import { ValueKeyIteratee } from 'lodash'
-import omit from 'lodash.omit'
+import { omit } from 'lodash-es'
 import { TransformableInfo } from 'logform'
 import { format } from 'winston'
 
-export const omitFormat = format((info, opts: { paths: ValueKeyIteratee<unknown> }) => omit(info, opts.paths) as TransformableInfo)
+export const omitFormat = format((info, opts) => omit(info, (opts as { paths: string[] }).paths) as TransformableInfo)

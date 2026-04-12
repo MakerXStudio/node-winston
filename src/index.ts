@@ -9,6 +9,8 @@ import { serializableErrorReplacer } from './serialize-error'
 
 export * from './omit-format'
 export * from './omit-nil-format'
+export * from './pretty-console-format'
+export * from './serialize-error'
 
 export type Logger = Pick<
   WinstonLogger,

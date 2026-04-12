@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'vitest'
 import { serializableErrorReplacer, serializeError } from './serialize-error'
 import { EOL } from 'os'
 

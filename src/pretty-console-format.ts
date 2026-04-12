@@ -4,7 +4,7 @@ import yamlifyColors from 'yamlify-object-colors'
 import colors from '@colors/colors'
 import { serializeError } from './serialize-error'
 
-export const yamlify = (meta: Record<string, unknown>) => {
+export const yamlify = (meta: object) => {
   return yamlifyObject(meta, {
     colors: yamlifyColors,
     errorToString: (error, prefix) =>
@@ -22,6 +22,6 @@ export const prettyConsoleFormat = (): Format =>
     format.printf((info: TransformableInfo) => {
       const { level, timestamp, message, ...meta } = info
       const yaml = yamlify(meta)
-      return `[${level}] ${colors.grey(timestamp)} ${message}${yaml}`
-    })
+      return `[${level}] ${colors.grey(timestamp as string)} ${message}${yaml}`
+    }),
   )
