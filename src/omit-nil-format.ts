@@ -1,4 +1,4 @@
-import { isNil, omitBy } from 'lodash-es'
+import { isNil, omitBy } from 'lodash'
 import { TransformableInfo } from 'logform'
 import { format } from 'winston'
 
