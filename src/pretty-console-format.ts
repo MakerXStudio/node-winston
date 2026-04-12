@@ -4,7 +4,7 @@ import yamlifyColors from 'yamlify-object-colors'
 import colors from '@colors/colors'
 import { serializeError } from './serialize-error'
 
-export const yamlify = (meta: object) => {
+export const yamlify = (meta: Record<string, unknown>) => {
   return yamlifyObject(meta, {
     colors: yamlifyColors,
     errorToString: (error, prefix) =>
