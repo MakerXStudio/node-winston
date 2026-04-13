@@ -1,4 +1,5 @@
 import { levels } from 'logform'
+import { describe, expect, it } from 'vitest'
 import { LEVEL, configs } from 'triple-beam'
 import { prettyConsoleFormat, yamlify } from './pretty-console-format'
 

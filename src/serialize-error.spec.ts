@@ -1,5 +1,5 @@
+import { describe, expect, it } from 'vitest'
 import { serializableErrorReplacer, serializeError } from './serialize-error'
-import { EOL } from 'os'
 
 describe('serializeError', () => {
   it('message and stack are not enumerable (and not serialized) by default', () => {
@@ -45,6 +45,6 @@ describe('serializableErrorReplacer', () => {
     }
     expect(message).toMatchInlineSnapshot(`"message"`)
     expect(stack).toBeDefined()
-    expect(stack.split(EOL).length).toBeGreaterThan(3)
+    expect(stack.split('\n').length).toBeGreaterThan(3)
   })
 })
