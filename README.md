@@ -96,7 +96,7 @@ const logger = createLogger({
 `createLogger` applies some default behaviour, chaining `omitNilFormat` and `omitFormat` in front of the final json or coloured YAML format.
 
 - `omitNilFormat` removes null or undefined values from output
-- `omitFormat` removes values by path using [lodash omit](https://lodash.com/docs/4.17.15#omit) (see docs for path specification)
+- `omitFormat` removes values by path using [es-toolkit's compat omit](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible, supports dot-notation paths)
 - `prettyConsoleFormat` applies the `colorize` and `timestamp` formats before formatting logs as coloured YAML
 
 If you wish to add additional formats, pass them in via the `consoleFormats` option.
