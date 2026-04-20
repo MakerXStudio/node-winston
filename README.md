@@ -10,6 +10,24 @@ npm install @makerx/node-winston
 
 `winston`, `logform`, `winston-transport`, `triple-beam` and `es-toolkit` are declared as peer dependencies, so bring your own versions (>=3, >=2, >=4, >=1, >=1 respectively).
 
+## Migrating from v1
+
+Breaking changes:
+
+- The `lodash` peer dependency has been replaced with `es-toolkit`. Install `es-toolkit` alongside winston (or it will be installed automatically).
+- `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the unredacted object, move omit/redact handling into that transport's format.
+- A new `audit` level sits between `warn` and `info`. Loggers configured at `level: 'info'` (or more verbose) will now include `audit` messages; loggers at `level: 'warn'` or higher still filter them out.
+- Pass a custom `levels` map via `loggerOptions` to opt out of the default level set (including `audit`); the returned logger type narrows to your keys.
+
+New functionality:
+
+- New `redactPaths` / `redactedValue` options replace values at dot-notation paths across every transport. Also available as the standalone `redactFormat`, and the `redactValues` / `redactValuesWith` helpers for direct use.
+- New `flatten` / `flattenReplacer` options serialise every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape suited to OTEL + Azure Log Analytics and other scalar-only aggregators. Also available as `jsonStringifyValuesFormat` and `jsonStringifyValues`.
+- Errors nested inside structured metadata are now fully serialised at the logger level (not just the Console transport) via the new `serializeErrorFormat`. It walks the whole info object — including nested objects and arrays — replacing every `Error` with a plain object that carries `name`, `message` and `stack`.
+- `createLogger` is now generic over the level map. When you pass `loggerOptions.levels`, the returned logger's method signatures narrow to your level keys (`logger.fatal(...)` becomes valid, `logger.audit` becomes a type error).
+- Colours for the default levels (including `audit`) are registered on first use of the default levels, so `colorize` / pretty output works out of the box without a module-load side effect.
+- `defaultLevels` is exported directly if you want to extend or re-use it.
+
 ## Creating a Logger
 
 `createLogger` builds a winston `Logger` with a pre-configured `Console` transport and a set of logger-level formats that apply to every transport.

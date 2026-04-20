@@ -32,16 +32,24 @@ export const defaultLevels = {
   verbose: 5,
 }
 
-// Register colours for the default levels so `colorize` / pretty output works out of the box.
+// Colours for the default levels, registered on first `createLogger` call that uses them
+// so importing a single format doesn't silently mutate winston's global colour map.
 // Callers who override `levels` should register their own colours via `winston.addColors`.
-addColors({
+const defaultLevelColors = {
   error: 'red',
   warn: 'yellow',
   audit: 'magenta',
   info: 'green',
   debug: 'blue',
   verbose: 'cyan',
-})
+}
+
+let defaultColorsRegistered = false
+const registerDefaultColors = () => {
+  if (defaultColorsRegistered) return
+  addColors(defaultLevelColors)
+  defaultColorsRegistered = true
+}
 
 export type LoggerWithLevels<L extends Record<string, number>> = Pick<WinstonLogger, 'child' | 'log'> & {
   [K in keyof L]: LeveledLogMethod
@@ -143,6 +151,9 @@ export function createLogger(options: CreateLoggerOptions): Logger
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createLogger(options: CreateLoggerOptions): any {
   const { omitPaths, redactPaths, redactedValue = '<redacted>', flatten, flattenReplacer } = options
+
+  // register default colours on first use of the default levels so `colorize` / pretty output works
+  if (!options.loggerOptions?.levels) registerDefaultColors()
 
   // aggregate transports
   const consoleTransport = createConsoleTransport(options)

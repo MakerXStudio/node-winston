@@ -2,9 +2,9 @@ import { TransformableInfo } from 'logform'
 import { format } from 'winston'
 
 /**
- * Serialises all top-level object values on the log info to JSON strings, producing
- * a flat `{ key: string }` shape suitable for OTEL transports that expect scalar values
- * (e.g. some log aggregators that index on string fields and suitable for OTEL + Azure Log Analytics).
+ * Serialises all top-level object values on the log info to JSON strings, producing a flat
+ * `{ key: string }` shape suitable for transports and aggregators that expect scalar values
+ * (e.g. OTEL + Azure Log Analytics).
  *
  * Accepts an optional `replacer` forwarded to `JSON.stringify` for each value.
  *

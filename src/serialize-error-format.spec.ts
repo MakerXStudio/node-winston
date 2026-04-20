@@ -32,4 +32,14 @@ describe('serializeErrorFormat', () => {
     const result = run({ a: 1, b: 'two', c: { nested: true } })
     expect(result).toMatchObject({ a: 1, b: 'two', c: { nested: true } })
   })
+
+  it('does not mutate nested caller objects or arrays', () => {
+    const cause = new Error('deep')
+    const arrErr = new Error('in-array')
+    const ctx = { cause }
+    const items = [{ err: arrErr }]
+    run({ context: ctx, items })
+    expect(ctx.cause).toBe(cause)
+    expect(items[0].err).toBe(arrErr)
+  })
 })
