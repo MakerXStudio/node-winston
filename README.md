@@ -14,7 +14,7 @@ npm install @makerx/node-winston
 
 Breaking changes:
 
-- The `lodash` peer dependency has been replaced with `es-toolkit`. Install `es-toolkit` alongside winston (or it will be installed automatically).
+- The `lodash` dependency has been replaced with `es-toolkit` as a peer dependency.
 - `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the unredacted object, move omit/redact handling into that transport's format.
 - A new `audit` level sits between `warn` and `info`. Loggers configured at `level: 'info'` (or more verbose) will now include `audit` messages; loggers at `level: 'warn'` or higher still filter them out.
 - Pass a custom `levels` map via `loggerOptions` to opt out of the default level set (including `audit`); the returned logger type narrows to your keys.
