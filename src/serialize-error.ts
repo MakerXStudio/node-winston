@@ -1,15 +1,17 @@
 import { JsonOptions } from 'logform'
 
 /**
- * Serialize an `Error` object into a plain object so that it can be serialized for logging, including the message and stack
- * - `message` and `stack` are explicitly copied
- * - other enumerable properties copied via `...rest`
+ * Serialize an `Error` object into a plain object so that it can be serialized for logging.
+ * Captures all own properties (including non-enumerable `message`/`stack`) plus `name` from the prototype.
  */
-export const serializeError = ({ message, stack, ...rest }: Error): object => ({
-  message,
-  stack,
-  ...rest,
-})
+export const serializeError = (error: Error): Record<string, unknown> => {
+  const out: Record<string, unknown> = { name: error.name }
+  for (const key of Object.getOwnPropertyNames(error)) {
+    const value = (error as unknown as Record<string, unknown>)[key]
+    out[key] = value instanceof Error ? serializeError(value) : value
+  }
+  return out
+}
 
 /**
  * Replaces values that are `instanceof Error` with the result of `serializeError`

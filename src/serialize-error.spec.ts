@@ -13,23 +13,34 @@ describe('serializeError', () => {
     expect(stack).toBeDefined()
     expect(stack.split('\n').length).toBeGreaterThan(3)
   })
-  it('can serialize a custom error', () => {
+  it('can serialize a custom error with a cause', () => {
     class CustomError extends Error {
       readonly custom: string
-      constructor(message: string, custom: string) {
-        super(message)
+      constructor(message: string, custom: string, options?: ErrorOptions) {
+        super(message, options)
         this.custom = custom
       }
     }
-    const { message, stack, custom } = JSON.parse(JSON.stringify(serializeError(new CustomError('message', 'custom')))) as {
+    const cause = new Error('cause message')
+    const {
+      message,
+      stack,
+      custom,
+      cause: serializedCause,
+    } = JSON.parse(JSON.stringify(serializeError(new CustomError('message', 'custom', { cause })))) as {
       message: string
       stack: string
       custom: string
+      cause: { name: string; message: string; stack: string }
     }
     expect(message).toMatchInlineSnapshot(`"message"`)
     expect(custom).toMatchInlineSnapshot(`"custom"`)
     expect(stack).toBeDefined()
     expect(stack.split('\n').length).toBeGreaterThan(3)
+    expect(serializedCause.name).toMatchInlineSnapshot(`"Error"`)
+    expect(serializedCause.message).toMatchInlineSnapshot(`"cause message"`)
+    expect(serializedCause.stack).toBeDefined()
+    expect(serializedCause.stack.split('\n').length).toBeGreaterThan(3)
   })
 })
 
