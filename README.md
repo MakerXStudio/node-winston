@@ -8,13 +8,17 @@ A set of [winston](https://github.com/winstonjs/winston) [formats](https://githu
 npm install @makerx/node-winston
 ```
 
-`winston`, `logform`, `winston-transport`, `triple-beam` and `es-toolkit` are declared as peer dependencies, so bring your own versions (>=3, >=2, >=4, >=1, >=1 respectively).
+`winston`, `logform`, `winston-transport`, `triple-beam`, `es-toolkit` and `serialize-error` are declared as peer dependencies, so bring your own versions (>=3, >=2, >=4, >=1, >=1, >=13 respectively).
+
+Requires Node.js `>=22.12` (for flag-free `require(esm)` support, needed by `serialize-error`'s ESM-only publish).
 
 ## Migrating from v1
 
 Breaking changes:
 
 - The `lodash` dependency has been replaced with `es-toolkit` as a peer dependency.
+- `serialize-error` is now a peer dependency used for `Error` serialisation — consumers get the well-tested package behaviour (own-prop capture, `cause` chains, circular refs) out of the box.
+- Node.js `>=22.12` is required (for flag-free `require(esm)`, needed by `serialize-error`'s ESM-only publish).
 - `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the unredacted object, move omit/redact handling into that transport's format.
 - A new `audit` level sits between `warn` and `info`. Loggers configured at `level: 'info'` (or more verbose) will now include `audit` messages; loggers at `level: 'warn'` or higher still filter them out.
 - Pass a custom `levels` map via `loggerOptions` to opt out of the default level set (including `audit`); the returned logger type narrows to your keys.
@@ -23,7 +27,7 @@ New functionality:
 
 - New `redactPaths` / `redactedValue` options replace values at dot-notation paths across every transport. Also available as the standalone `redactFormat`, and the `redactValues` / `redactValuesWith` helpers for direct use.
 - New `flatten` / `flattenReplacer` options serialise every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape suited to OTEL + Azure Log Analytics and other scalar-only aggregators. Also available as `jsonStringifyValuesFormat` and `jsonStringifyValues`.
-- Errors nested inside structured metadata are now fully serialised at the logger level (not just the Console transport) via the new `serializeErrorFormat`. It walks the whole info object — including nested objects and arrays — replacing every `Error` with a plain object that carries `name`, `message` and `stack`.
+- Errors nested inside structured metadata are now fully serialised at the logger level (not just the Console transport) via the new `serializeErrorFormat`. It walks the whole info object — including nested objects and arrays — replacing every `Error` with a plain object that carries `name`, `message` and `stack`. The serializer is pluggable: pass `errorSerializer` to `createLogger` (or `serializer` to `serializeErrorFormat` directly) to swap in your own transformation — useful when migrating from a winston-transport patch that already normalises errors.
 - `createLogger` is now generic over the level map. When you pass `loggerOptions.levels`, the returned logger's method signatures narrow to your level keys (`logger.fatal(...)` becomes valid, `logger.audit` becomes a type error).
 - Colours for the default levels (including `audit`) are registered on first use of the default levels, so `colorize` / pretty output works out of the box without a module-load side effect.
 - `defaultLevels` is exported directly if you want to extend or re-use it.
@@ -39,18 +43,19 @@ Formats are applied in two layers:
 
 ### Options
 
-| Option            | Type                      | Description                                                                                                                                                                                          |
-| ----------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `consoleFormat`   | `'json' \| 'pretty'`      | Output format for the Console transport. `json` (default) for deployed environments, `pretty` for colourised YAML during local development.                                                          |
-| `consoleOptions`  | `ConsoleTransportOptions` | Options forwarded to the Console transport (e.g. `silent`, per-transport `level`). The `format` property is managed by this library.                                                                 |
-| `consoleFormats`  | `Format[]`                | Extra formats appended to the Console transport's format chain, before the final `json`/`pretty` step. Applies to the Console transport only.                                                        |
-| `transports`      | `Transport[]`             | Additional winston transports attached alongside the Console transport.                                                                                                                              |
-| `omitPaths`       | `string[]`                | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                           |
-| `redactPaths`     | `string[]`                | Dot-notation paths whose values are replaced with `redactedValue`. Applied at the logger level, so affects all transports.                                                                           |
-| `redactedValue`   | `string`                  | Replacement value used by `redactPaths`. Defaults to `'<redacted>'`.                                                                                                                                 |
-| `flatten`         | `boolean`                 | When `true`, serialises every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape for transports that expect scalar values (e.g. OTEL + Azure Log Analytics). |
-| `flattenReplacer` | `(key, value) => any`     | Optional `JSON.stringify` replacer used when `flatten` serialises each top-level value.                                                                                                              |
-| `loggerOptions`   | `LoggerOptions`           | Winston logger options (e.g. `level`, `defaultMeta`). A `format` supplied here is appended after the library's logger-level formats but still runs before `flatten` when enabled.                    |
+| Option            | Type                      | Description                                                                                                                                                                                                                                                                                    |
+| ----------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `consoleFormat`   | `'json' \| 'pretty'`      | Output format for the Console transport. `json` (default) for deployed environments, `pretty` for colourised YAML during local development.                                                                                                                                                    |
+| `consoleOptions`  | `ConsoleTransportOptions` | Options forwarded to the Console transport (e.g. `silent`, per-transport `level`). The `format` property is managed by this library.                                                                                                                                                           |
+| `consoleFormats`  | `Format[]`                | Extra formats appended to the Console transport's format chain, before the final `json`/`pretty` step. Applies to the Console transport only.                                                                                                                                                  |
+| `transports`      | `Transport[]`             | Additional winston transports attached alongside the Console transport.                                                                                                                                                                                                                        |
+| `omitPaths`       | `string[]`                | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                                                                                                                     |
+| `redactPaths`     | `string[]`                | Dot-notation paths whose values are replaced with `redactedValue`. Applied at the logger level, so affects all transports.                                                                                                                                                                     |
+| `redactedValue`   | `string`                  | Replacement value used by `redactPaths`. Defaults to `'<redacted>'`.                                                                                                                                                                                                                           |
+| `flatten`         | `boolean`                 | When `true`, serialises every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape for transports that expect scalar values (e.g. OTEL + Azure Log Analytics).                                                                                           |
+| `flattenReplacer` | `(key, value) => any`     | Optional `JSON.stringify` replacer used when `flatten` serialises each top-level value.                                                                                                                                                                                                        |
+| `errorSerializer` | `ErrorSerializer`         | Custom serializer applied to every `Error` instance at the logger level (via `serializeErrorFormat`) and as the Console transport's `format.json` replacer. Defaults to the library's `serializeError`, which delegates to [`serialize-error`](https://www.npmjs.com/package/serialize-error). |
+| `loggerOptions`   | `LoggerOptions`           | Winston logger options (e.g. `level`, `defaultMeta`). A `format` supplied here is appended after the library's logger-level formats but still runs before `flatten` when enabled.                                                                                                              |
 
 ### Log levels
 
@@ -194,9 +199,30 @@ try {
 
 `createLogger` solves this with two complementary mechanisms:
 
-- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth) with a plain, JSON-serializable object that includes `name`, `message` and `stack`. This applies to every transport.
+- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth) with a plain, JSON-serializable object (via the [`serialize-error`](https://www.npmjs.com/package/serialize-error) package). This applies to every transport.
 - `serializableErrorReplacer` is passed to the Console transport's final `format.json()` as a safety net — [logform](https://github.com/winstonjs/logform) uses [safe-stable-stringify](https://www.npmjs.com/package/safe-stable-stringify), which accepts a replacer, so any `Error` that slips through is still serialised correctly.
 
 ```ts
 format.json({ replacer: serializableErrorReplacer })
+```
+
+To plug in a custom transformation (for example, an `Error`-normalising function previously applied via a custom winston-transport), pass it via `errorSerializer` — it's threaded into both mechanisms:
+
+```ts
+import { createLogger } from '@makerx/node-winston'
+
+const logger = createLogger({
+  errorSerializer: (error) => ({ kind: error.name, detail: error.message, trace: error.stack }),
+})
+```
+
+For direct format usage, `serializeErrorFormat` accepts the same override and `createSerializableErrorReplacer(serializer)` builds a matching JSON replacer:
+
+```ts
+import { format } from 'winston'
+import { createSerializableErrorReplacer, serializeErrorFormat } from '@makerx/node-winston'
+
+const serializer = (error: Error) => ({ kind: error.name, detail: error.message })
+
+format.combine(serializeErrorFormat({ serializer }), format.json({ replacer: createSerializableErrorReplacer(serializer) }))
 ```

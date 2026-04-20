@@ -7,7 +7,7 @@ import { omitFormat } from './omit-format'
 import { omitNilFormat } from './omit-nil-format'
 import { prettyConsoleFormat } from './pretty-console-format'
 import { redactFormat } from './redact-format'
-import { serializableErrorReplacer } from './serialize-error'
+import { createSerializableErrorReplacer, ErrorSerializer, serializeError } from './serialize-error'
 import { serializeErrorFormat } from './serialize-error-format'
 
 export * from './json-stringify-values'
@@ -116,6 +116,15 @@ export interface CreateLoggerOptions {
   flattenReplacer?: (this: any, key: string, value: any) => any
 
   /**
+   * Custom serializer used whenever an `Error` instance is encountered, both by the logger-level
+   * `serializeErrorFormat` (walks the full info tree) and by the Console transport's
+   * `format.json` replacer (safety net for errors that slip through). Defaults to the library's
+   * `serializeError`, which delegates to the
+   * [`serialize-error`](https://www.npmjs.com/package/serialize-error) package.
+   */
+  errorSerializer?: ErrorSerializer
+
+  /**
    * Winston `LoggerOptions` forwarded to the underlying logger (e.g. `level`, `defaultMeta`).
    * `transports` is managed by this library; pass extras via `transports` instead.
    * A `format` provided here is appended after the library's logger-level formats, but still runs
@@ -124,7 +133,12 @@ export interface CreateLoggerOptions {
   loggerOptions?: Omit<LoggerOptions, 'transports'>
 }
 
-export const createConsoleTransport = ({ consoleFormat = 'json', consoleOptions, consoleFormats }: CreateLoggerOptions) => {
+export const createConsoleTransport = ({
+  consoleFormat = 'json',
+  consoleOptions,
+  consoleFormats,
+  errorSerializer = serializeError,
+}: CreateLoggerOptions) => {
   // aggregate the console formats
   const formats: Format[] = [omitNilFormat()]
 
@@ -139,7 +153,7 @@ export const createConsoleTransport = ({ consoleFormat = 'json', consoleOptions,
     ...consoleOptions,
     format: prettyFormat
       ? format.combine(...formats, prettyFormat)
-      : format.combine(format.timestamp(), ...formats, format.json({ replacer: serializableErrorReplacer })),
+      : format.combine(format.timestamp(), ...formats, format.json({ replacer: createSerializableErrorReplacer(errorSerializer) })),
   }
   return new Console(options)
 }
@@ -150,7 +164,7 @@ export function createLogger<const L extends Record<string, number>>(
 export function createLogger(options: CreateLoggerOptions): Logger
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createLogger(options: CreateLoggerOptions): any {
-  const { omitPaths, redactPaths, redactedValue = '<redacted>', flatten, flattenReplacer } = options
+  const { omitPaths, redactPaths, redactedValue = '<redacted>', flatten, flattenReplacer, errorSerializer } = options
 
   // register default colours on first use of the default levels so `colorize` / pretty output works
   if (!options.loggerOptions?.levels) registerDefaultColors()
@@ -161,7 +175,7 @@ export function createLogger(options: CreateLoggerOptions): any {
   if (options.transports) transports.push(...options.transports)
 
   // logger-level formats apply to all transports
-  const loggerFormats: Format[] = [serializeErrorFormat()]
+  const loggerFormats: Format[] = [serializeErrorFormat({ serializer: errorSerializer })]
   if (omitPaths) loggerFormats.push(omitFormat({ paths: omitPaths }))
   if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)

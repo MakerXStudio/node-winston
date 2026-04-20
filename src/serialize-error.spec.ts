@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { serializableErrorReplacer, serializeError } from './serialize-error'
+import { createSerializableErrorReplacer, serializableErrorReplacer, serializeError } from './serialize-error'
 
 describe('serializeError', () => {
   it('message and stack are not enumerable (and not serialized) by default', () => {
@@ -57,5 +57,13 @@ describe('serializableErrorReplacer', () => {
     expect(message).toMatchInlineSnapshot(`"message"`)
     expect(stack).toBeDefined()
     expect(stack.split('\n').length).toBeGreaterThan(3)
+  })
+})
+
+describe('createSerializableErrorReplacer', () => {
+  it('uses the supplied serializer for Error values', () => {
+    const replacer = createSerializableErrorReplacer(() => ({ marker: 'custom' }))
+    const result = JSON.parse(JSON.stringify({ nested: new Error('message') }, replacer)) as { nested: { marker: string } }
+    expect(result.nested.marker).toBe('custom')
   })
 })

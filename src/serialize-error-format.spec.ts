@@ -1,11 +1,12 @@
 import { TransformableInfo } from 'logform'
 import { LEVEL } from 'triple-beam'
 import { describe, expect, it } from 'vitest'
-import { serializeErrorFormat } from './serialize-error-format'
+import { serializeErrorFormat, SerializeErrorFormatOptions } from './serialize-error-format'
 
-const run = (info: Record<string, unknown>) => {
+const run = (info: Record<string, unknown>, opts?: SerializeErrorFormatOptions) => {
   const input = { [LEVEL]: 'info', level: 'info', message: '', ...info } as TransformableInfo
-  return serializeErrorFormat().transform(input, {}) as Record<string, unknown>
+  const fmt = serializeErrorFormat(opts)
+  return fmt.transform(input, fmt.options) as Record<string, unknown>
 }
 
 describe('serializeErrorFormat', () => {
@@ -41,5 +42,11 @@ describe('serializeErrorFormat', () => {
     run({ context: ctx, items })
     expect(ctx.cause).toBe(cause)
     expect(items[0].err).toBe(arrErr)
+  })
+
+  it('uses the supplied serializer instead of the default', () => {
+    const result = run({ context: { cause: new Error('deep') } }, { serializer: (error) => ({ marker: 'custom', message: error.message }) })
+    const cause = (result.context as { cause: { marker: string; message: string } }).cause
+    expect(cause).toEqual({ marker: 'custom', message: 'deep' })
   })
 })
