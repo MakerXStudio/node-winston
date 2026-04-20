@@ -60,7 +60,7 @@ Formats are applied in two layers:
 { error: 0, warn: 1, audit: 2, info: 3, debug: 4, verbose: 5 }
 ```
 
-Colours for the default levels (including `audit`) are registered at module load, so `colorize` / pretty output works out of the box.
+Colours for the default levels (including `audit`) are registered on the first `createLogger` call that uses them, so `colorize` / pretty output works out of the box.
 
 Pass your own `levels` via `loggerOptions` to override. When you do, the returned logger is typed against your level keys (so `logger.audit` is only present when the default levels are in use), and you should register colours for your levels via `winston.addColors`:
 
