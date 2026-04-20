@@ -49,4 +49,28 @@ describe('serializeErrorFormat', () => {
     const cause = (result.context as { cause: { marker: string; message: string } }).cause
     expect(cause).toEqual({ marker: 'custom', message: 'deep' })
   })
+
+  it('replaces nested circular references with [Circular]', () => {
+    const ctx: Record<string, unknown> = { name: 'parent' }
+    ctx.self = ctx
+    const result = run({ ctx })
+    const walked = result.ctx as { name: string; self: unknown }
+    expect(walked.name).toBe('parent')
+    expect(walked.self).toBe('[Circular]')
+  })
+
+  it('replaces a direct cycle on the info object with [Circular]', () => {
+    const input = { [LEVEL]: 'info', level: 'info', message: '' } as TransformableInfo & { self?: unknown }
+    input.self = input
+    const fmt = serializeErrorFormat()
+    const result = fmt.transform(input, fmt.options) as unknown as { self: unknown }
+    expect(result.self).toBe('[Circular]')
+  })
+
+  it('serialises sibling references to the same object independently (no false positive)', () => {
+    const shared = { value: 42 }
+    const result = run({ a: shared, b: shared })
+    expect(result.a).toEqual({ value: 42 })
+    expect(result.b).toEqual({ value: 42 })
+  })
 })

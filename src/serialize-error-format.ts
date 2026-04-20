@@ -22,18 +22,23 @@ export interface SerializeErrorFormatOptions {
  */
 export const serializeErrorFormat = format((info, opts) => {
   const serializer = (opts as SerializeErrorFormatOptions | undefined)?.serializer ?? serializeError
-  const walk = (value: unknown): unknown => {
+  const walk = (value: unknown, seen: WeakSet<object>): unknown => {
     if (value instanceof Error) return serializer(value)
-    if (Array.isArray(value)) return value.map(walk)
-    if (value && typeof value === 'object') {
+    if (!value || typeof value !== 'object') return value
+    if (seen.has(value)) return '[Circular]'
+    seen.add(value)
+    try {
+      if (Array.isArray(value)) return value.map((v) => walk(v, seen))
       const source = value as Record<string, unknown>
       const out: Record<string, unknown> = {}
-      for (const key of Object.keys(source)) out[key] = walk(source[key])
+      for (const key of Object.keys(source)) out[key] = walk(source[key], seen)
       return out
+    } finally {
+      seen.delete(value)
     }
-    return value
   }
   const record = info as unknown as Record<string, unknown>
-  for (const key of Object.keys(record)) record[key] = walk(record[key])
+  const seen = new WeakSet<object>([record])
+  for (const key of Object.keys(record)) record[key] = walk(record[key], seen)
   return info as TransformableInfo
 })
