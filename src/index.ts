@@ -1,7 +1,13 @@
 import { format, Format } from 'logform'
-import { createLogger as winstonCreateLogger, Logger as WinstonLogger, LoggerOptions, LeveledLogMethod, addColors } from 'winston'
+import {
+  createLogger as winstonCreateLogger,
+  Logger as WinstonLogger,
+  LoggerOptions,
+  LeveledLogMethod,
+  addColors,
+  transports,
+} from 'winston'
 import * as Transport from 'winston-transport'
-import { Console, ConsoleTransportOptions } from 'winston/lib/winston/transports'
 import { jsonStringifyValuesFormat } from './json-stringify-values-format'
 import { omitFormat } from './omit-format'
 import { omitNilFormat } from './omit-nil-format'
@@ -9,6 +15,13 @@ import { prettyConsoleFormat } from './pretty-console-format'
 import { redactFormat } from './redact-format'
 import { createSerializableErrorReplacer, ErrorSerializer, serializeError } from './serialize-error'
 import { serializeErrorFormat } from './serialize-error-format'
+
+// `winston/lib/winston/transports` is a CJS deep import that can't be consumed from ESM: it's a
+// directory import, and even with a `/index.js` suffix its named exports are defined via
+// `Object.defineProperty(exports, 'X', { get() {...} })` which cjs-module-lexer doesn't expose
+// as ESM named bindings. Go through winston's main entry instead.
+const { Console } = transports
+type ConsoleTransportOptions = transports.ConsoleTransportOptions
 
 export * from './json-stringify-values'
 export * from './json-stringify-values-format'

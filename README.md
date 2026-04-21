@@ -166,13 +166,12 @@ Every format used by `createLogger` is also exported for direct use with your ow
 Direct usage example:
 
 ```ts
-import { format, createLogger } from 'winston'
-import { Console } from 'winston/lib/winston/transports'
+import { format, createLogger, transports } from 'winston'
 import { redactFormat, serializeErrorFormat } from '@makerx/node-winston'
 
 const logger = createLogger({
   format: format.combine(serializeErrorFormat(), redactFormat({ paths: ['user.email'] })),
-  transports: [new Console({ format: format.json() })],
+  transports: [new transports.Console({ format: format.json() })],
 })
 ```
 
