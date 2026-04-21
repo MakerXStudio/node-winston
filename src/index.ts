@@ -15,6 +15,7 @@ import { prettyConsoleFormat } from './pretty-console-format'
 import { redactFormat } from './redact-format'
 import { createSerializableErrorReplacer, ErrorSerializer, serializeError } from './serialize-error'
 import { serializeErrorFormat } from './serialize-error-format'
+import { mapAuditLevelForOtel } from './map-audit-level-for-otel'
 
 // `winston/lib/winston/transports` is a CJS deep import that can't be consumed from ESM: it's a
 // directory import, and even with a `/index.js` suffix its named exports are defined via
@@ -32,6 +33,7 @@ export * from './redact-format'
 export * from './redact-values'
 export * from './serialize-error'
 export * from './serialize-error-format'
+export * from './map-audit-level-for-otel'
 
 // winstonjs' default levels have debug and verbose reversed, which is confusing and causes filtering issues with Seq,
 // CloudWatch etc (given they assume Verbose/Trace should be the lowest/noisiest log level).
@@ -129,6 +131,16 @@ export interface CreateLoggerOptions {
   flattenReplacer?: (this: any, key: string, value: any) => any
 
   /**
+   * When `true`, prepends `mapAuditLevelForOtel` to the logger-level format chain. Rewrites the
+   * triple-beam `LEVEL` symbol from `audit` to `info` so OTEL maps the record onto a known severity
+   * tier, and copies the original level onto a `logLevel` property so it survives as an OTEL attribute
+   * (the OTEL winston-transport strips the string `level`). Enable when shipping logs via OTEL — most
+   * visibly for Azure Monitor / Log Analytics, but applies to any OTEL backend that relies on the
+   * spec-defined severity.
+   */
+  mapAuditLevelForOtel?: boolean
+
+  /**
    * Custom serializer used whenever an `Error` instance is encountered, both by the logger-level
    * `serializeErrorFormat` (walks the full info tree) and by the Console transport's
    * `format.json` replacer (safety net for errors that slip through). Defaults to the library's
@@ -177,10 +189,36 @@ export function createLogger<const L extends Record<string, number>>(
 export function createLogger(options: CreateLoggerOptions): Logger
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createLogger(options: CreateLoggerOptions): any {
-  const { omitPaths, redactPaths, redactedValue = '<redacted>', flatten, flattenReplacer, errorSerializer } = options
+  const {
+    omitPaths,
+    redactPaths,
+    redactedValue = '<redacted>',
+    flatten,
+    flattenReplacer,
+    errorSerializer,
+    mapAuditLevelForOtel: mapAuditForOtel,
+  } = options
 
   // register default colours on first use of the default levels so `colorize` / pretty output works
   if (!options.loggerOptions?.levels) registerDefaultColors()
+
+  // Guard against silent audit-record loss: the format rewrites the LEVEL symbol from 'audit' to 'info',
+  // which the filter on any transport set to level:'audit' would then drop (info is more verbose than audit).
+  if (mapAuditForOtel) {
+    const misconfigured: string[] = []
+    if (options.loggerOptions?.level === 'audit') misconfigured.push('loggerOptions.level')
+    if (options.consoleOptions?.level === 'audit') misconfigured.push('consoleOptions.level')
+    options.transports?.forEach((t, i) => {
+      if (t.level === 'audit') misconfigured.push(`transports[${i}].level`)
+    })
+    if (misconfigured.length > 0) {
+      throw new Error(
+        `mapAuditLevelForOtel rewrites the triple-beam LEVEL symbol from 'audit' to 'info', ` +
+          `which would be dropped by the 'audit'-level filter on ${misconfigured.join(', ')}. ` +
+          `Use 'info' (or a more verbose level) instead.`,
+      )
+    }
+  }
 
   // aggregate transports
   const consoleTransport = createConsoleTransport(options)
@@ -189,6 +227,7 @@ export function createLogger(options: CreateLoggerOptions): any {
 
   // logger-level formats apply to all transports
   const loggerFormats: Format[] = [serializeErrorFormat({ serializer: errorSerializer })]
+  if (mapAuditForOtel) loggerFormats.push(mapAuditLevelForOtel())
   if (omitPaths) loggerFormats.push(omitFormat({ paths: omitPaths }))
   if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)

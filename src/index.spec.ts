@@ -1,3 +1,4 @@
+import { LEVEL } from 'triple-beam'
 import { format } from 'winston'
 import TransportStream from 'winston-transport'
 import { describe, expect, it } from 'vitest'
@@ -216,6 +217,77 @@ describe('createLogger flatten', () => {
     })
     logger.info('hello')
     expect((transport.logs[0] as { injected: unknown }).injected).toBe('{"a":1}')
+  })
+})
+
+describe('createLogger mapAuditLevelForOtel', () => {
+  it('rewrites the LEVEL symbol from audit to info, preserves the original on logLevel, and leaves the string level alone', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      mapAuditLevelForOtel: true,
+    })
+    logger.audit('audit-event', { actor: 'user-1' })
+    const info = transport.logs[0] as Record<string | symbol, unknown>
+    expect(info[LEVEL]).toBe('info')
+    expect(info.level).toBe('audit')
+    expect(info.logLevel).toBe('audit')
+    expect(info.actor).toBe('user-1')
+  })
+
+  it('leaves non-audit levels untouched but still records logLevel', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      mapAuditLevelForOtel: true,
+    })
+    logger.warn('heads-up')
+    const info = transport.logs[0] as Record<string | symbol, unknown>
+    expect(info.level).toBe('warn')
+    expect(info[LEVEL]).toBe('warn')
+    expect(info.logLevel).toBe('warn')
+  })
+
+  it('is opt-in — when disabled, audit records keep their level and no logLevel is added', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+    logger.audit('audit-event')
+    const info = transport.logs[0] as Record<string | symbol, unknown>
+    expect(info.level).toBe('audit')
+    expect(info[LEVEL]).toBe('audit')
+    expect(info.logLevel).toBeUndefined()
+  })
+
+  it('throws when loggerOptions.level is audit (records would be silently dropped after rewrite)', () => {
+    expect(() =>
+      createLogger({
+        mapAuditLevelForOtel: true,
+        consoleOptions: { silent: true },
+        loggerOptions: { level: 'audit' },
+      }),
+    ).toThrow(/loggerOptions\.level/)
+  })
+
+  it('throws when consoleOptions.level is audit', () => {
+    expect(() =>
+      createLogger({
+        mapAuditLevelForOtel: true,
+        consoleOptions: { level: 'audit', silent: true },
+      }),
+    ).toThrow(/consoleOptions\.level/)
+  })
+
+  it('throws when any supplied transport has level audit', () => {
+    const transport = new InMemoryTransport({ level: 'audit' })
+    expect(() =>
+      createLogger({
+        mapAuditLevelForOtel: true,
+        consoleOptions: { silent: true },
+        transports: [transport],
+      }),
+    ).toThrow(/transports\[0\]\.level/)
   })
 })
 
