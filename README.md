@@ -38,24 +38,25 @@ New functionality:
 
 Formats are applied in two layers:
 
-- **Logger-level** (applied to all transports, in order): `serializeErrorFormat` → `omitFormat` (if `omitPaths`) → `redactFormat` (if `redactPaths`) → `loggerOptions.format` (if supplied) → `jsonStringifyValuesFormat` (if `flatten`; always last so it captures every prior transformation).
+- **Logger-level** (applied to all transports, in order): `serializeErrorFormat` → `mapAuditLevelForOtel` (if enabled) → `omitFormat` (if `omitPaths`) → `redactFormat` (if `redactPaths`) → `loggerOptions.format` (if supplied) → `jsonStringifyValuesFormat` (if `flatten`; always last so it captures every prior transformation).
 - **Console transport** (applied to Console output only): `omitNilFormat` → any `consoleFormats` → either `prettyConsoleFormat` (when `consoleFormat: 'pretty'`) or `timestamp` + `json` (when `consoleFormat: 'json'`).
 
 ### Options
 
-| Option            | Type                      | Description                                                                                                                                                                                                                                                                                    |
-| ----------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `consoleFormat`   | `'json' \| 'pretty'`      | Output format for the Console transport. `json` (default) for deployed environments, `pretty` for colourised YAML during local development.                                                                                                                                                    |
-| `consoleOptions`  | `ConsoleTransportOptions` | Options forwarded to the Console transport (e.g. `silent`, per-transport `level`). The `format` property is managed by this library.                                                                                                                                                           |
-| `consoleFormats`  | `Format[]`                | Extra formats appended to the Console transport's format chain, before the final `json`/`pretty` step. Applies to the Console transport only.                                                                                                                                                  |
-| `transports`      | `Transport[]`             | Additional winston transports attached alongside the Console transport.                                                                                                                                                                                                                        |
-| `omitPaths`       | `string[]`                | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                                                                                                                     |
-| `redactPaths`     | `string[]`                | Dot-notation paths whose values are replaced with `redactedValue`. Applied at the logger level, so affects all transports.                                                                                                                                                                     |
-| `redactedValue`   | `string`                  | Replacement value used by `redactPaths`. Defaults to `'<redacted>'`.                                                                                                                                                                                                                           |
-| `flatten`         | `boolean`                 | When `true`, serialises every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape for transports that expect scalar values (e.g. OTEL + Azure Log Analytics).                                                                                           |
-| `flattenReplacer` | `(key, value) => any`     | Optional `JSON.stringify` replacer used when `flatten` serialises each top-level value.                                                                                                                                                                                                        |
-| `errorSerializer` | `ErrorSerializer`         | Custom serializer applied to every `Error` instance at the logger level (via `serializeErrorFormat`) and as the Console transport's `format.json` replacer. Defaults to the library's `serializeError`, which delegates to [`serialize-error`](https://www.npmjs.com/package/serialize-error). |
-| `loggerOptions`   | `LoggerOptions`           | Winston logger options (e.g. `level`, `defaultMeta`). A `format` supplied here is appended after the library's logger-level formats but still runs before `flatten` when enabled.                                                                                                              |
+| Option                                  | Type                      | Description                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `consoleFormat`                         | `'json' \| 'pretty'`      | Output format for the Console transport. `json` (default) for deployed environments, `pretty` for colourised YAML during local development.                                                                                                                                                                          |
+| `consoleOptions`                        | `ConsoleTransportOptions` | Options forwarded to the Console transport (e.g. `silent`, per-transport `level`). The `format` property is managed by this library.                                                                                                                                                                                 |
+| `consoleFormats`                        | `Format[]`                | Extra formats appended to the Console transport's format chain, before the final `json`/`pretty` step. Applies to the Console transport only.                                                                                                                                                                        |
+| `transports`                            | `Transport[]`             | Additional winston transports attached alongside the Console transport.                                                                                                                                                                                                                                              |
+| `omitPaths`                             | `string[]`                | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                                                                                                                                           |
+| `redactPaths`                           | `string[]`                | Dot-notation paths whose values are replaced with `redactedValue`. Applied at the logger level, so affects all transports.                                                                                                                                                                                           |
+| `redactedValue`                         | `string`                  | Replacement value used by `redactPaths`. Defaults to `'<redacted>'`.                                                                                                                                                                                                                                                 |
+| `flatten`                               | `boolean`                 | When `true`, serialises every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape for transports that expect scalar values (e.g. OTEL + Azure Log Analytics).                                                                                                                 |
+| `flattenReplacer`                       | `(key, value) => any`     | Optional `JSON.stringify` replacer used when `flatten` serialises each top-level value.                                                                                                                                                                                                                              |
+| `errorSerializer`                       | `ErrorSerializer`         | Custom serializer applied to every `Error` instance at the logger level (via `serializeErrorFormat`) and as the Console transport's `format.json` replacer. Defaults to the library's `serializeError`, which delegates to [`serialize-error`](https://www.npmjs.com/package/serialize-error).                       |
+| `mapAuditLevelForOtel`                  | `boolean`                 | When `true`, rewrites the triple-beam `LEVEL` from `audit` to `info` and copies the original onto `logLevel` for OTEL compatibility. See [Shipping the audit level via OpenTelemetry](#shipping-the-audit-level-via-opentelemetry).                                                                                  |
+| `loggerOptions`                         | `LoggerOptions`           | Winston logger options (e.g. `level`, `defaultMeta`). A `format` supplied here is appended after the library's logger-level formats but still runs before `flatten` when enabled.                                                                                                                                    |
 
 ### Log levels
 
@@ -81,6 +82,22 @@ addColors({ fatal: 'red', error: 'red', info: 'green', trace: 'cyan' })
 
 logger.fatal('process is exiting') // typed; logger.audit would be a type error
 ```
+
+### Shipping the audit level via OpenTelemetry
+
+[`@opentelemetry/instrumentation-winston`](https://www.npmjs.com/package/@opentelemetry/instrumentation-winston) auto-installs [`@opentelemetry/winston-transport`](https://www.npmjs.com/package/@opentelemetry/winston-transport), which derives OTEL's `severityText` / `severityNumber` from Winston's triple-beam `LEVEL` symbol and strips the string `level` property before building attributes. OTEL's log spec only defines a fixed severity enumeration (trace/debug/info/warn/error/fatal), so Winston's custom `audit` level arrives with `severityNumber: undefined` and no queryable record of the original level. This is most visible on Azure Monitor / Log Analytics (which ignores records without a mapped severity), but affects any OTEL backend that relies on the spec-defined severity.
+
+Set `mapAuditLevelForOtel: true` to opt in:
+
+```ts
+const logger = createLogger({
+  mapAuditLevelForOtel: true,
+})
+```
+
+The format rewrites the triple-beam `LEVEL` symbol from `audit` to `info` (so OTEL maps the record onto `info` severity) and copies the original level onto a `logLevel` property (so it survives as an OTEL attribute — e.g. queryable as `customDimensions.logLevel == "audit"` in Azure Log Analytics). The string `info.level` is left as `audit` for other transports — so local Console JSON output still shows `"level": "audit"`.
+
+**Caveat:** the `LEVEL` symbol also drives transport-level filtering, so a logger, console, or transport explicitly set to `level: 'audit'` would silently drop these records after the rewrite (`info` is more verbose than `audit`). `createLogger` detects this combination and throws at construction — use `'info'` (or a more verbose level) instead. Only enable this option when shipping logs via OTEL — typically a deployed-environment concern.
 
 ### Example: environment-driven configuration
 
@@ -154,14 +171,15 @@ const logger = createLogger({
 
 Every format used by `createLogger` is also exported for direct use with your own winston setup.
 
-| Format                      | Purpose                                                                                                                                                                |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serializeErrorFormat`      | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. |
-| `omitFormat`                | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                    |
-| `omitNilFormat`             | Removes top-level `null` or `undefined` values.                                                                                                                        |
-| `redactFormat`              | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                          |
-| `jsonStringifyValuesFormat` | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`.                                           |
-| `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                         |
+| Format                                  | Purpose                                                                                                                                                                |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serializeErrorFormat`                  | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. |
+| `omitFormat`                            | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                    |
+| `omitNilFormat`                         | Removes top-level `null` or `undefined` values.                                                                                                                        |
+| `redactFormat`                          | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                          |
+| `jsonStringifyValuesFormat`             | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`.                                           |
+| `prettyConsoleFormat`                   | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                         |
+| `mapAuditLevelForOtel`                  | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration.           |
 
 Direct usage example:
 
