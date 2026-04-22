@@ -66,7 +66,9 @@ const registerDefaultColors = () => {
   defaultColorsRegistered = true
 }
 
-export type LoggerWithLevels<L extends Record<string, number>> = Pick<WinstonLogger, 'child' | 'log'> & {
+export type LoggerWithLevels<L extends Record<string, number>> = Pick<WinstonLogger, 'log'> & {
+  child(options: object): LoggerWithLevels<L>
+} & {
   [K in keyof L]: LeveledLogMethod
 }
 
