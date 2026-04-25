@@ -11,6 +11,12 @@ const config: RollupOptions = {
       format: 'cjs',
       entryFileNames: '[name].js',
       exports: 'named',
+      // 'auto' emits a runtime `__esModule` check for each external default-import,
+      // unwrapping `.default` from ESM-shaped CJS modules (yamlify-object's CJS build,
+      // emitted by tsc, exposes the function as `exports.default` with `__esModule: true`
+      // and no `module.exports = fn` shim — without interop, `require()` returns the
+      // namespace object and calling it throws TypeError).
+      interop: 'auto',
       preserveModules: true,
       sourcemap: true,
     },
