@@ -24,6 +24,7 @@ import { mapAuditLevelForOtel } from './map-audit-level-for-otel'
 const { Console } = transports
 type ConsoleTransportOptions = transports.ConsoleTransportOptions
 
+export * from './callback-transport'
 export * from './json-stringify-values'
 export * from './json-stringify-values-format'
 export * from './omit-format'

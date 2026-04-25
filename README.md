@@ -238,6 +238,26 @@ A few things worth calling out:
 - Inject an error sink (`logError`) rather than logging dispatch failures via the same logger this transport is attached to — otherwise a failing endpoint produces an audit record that produces another failing dispatch.
 - Override `close()` and `Promise.allSettled` the in-flight set so a failing dispatch doesn't reject the drain. Winston calls `close` from `logger.close()` / `logger.end()`, so transports get a chance to flush before exit.
 
+#### `CallbackTransport`
+
+For the common case where the only thing you'd customise is the dispatch itself, the library exports `CallbackTransport` — a ready-made subclass that wraps the boilerplate above. Construct it with a promise-returning `LogHandler` (receives a `TransformedInfo` — the same `{ level, message, meta }` shape `extractTransformableInfo` returns) and a `LogError` sink for dispatch failures, and pass any standard winston-transport options (e.g. `level`) through the third argument:
+
+```ts
+import { CallbackTransport, createLogger } from '@makerx/node-winston'
+
+const logger = createLogger({
+  transports: [
+    new CallbackTransport(
+      ({ level, message, meta }) => sendToAuditEndpoint({ level, message, ...meta }),
+      (message, ...args) => logger.error(message, ...args),
+      { level: 'audit' },
+    ),
+  ],
+})
+```
+
+In-flight dispatches are tracked internally and drained via `Promise.allSettled` on `close()`, and any rejection from the handler is routed to the supplied `logError` so a failing endpoint can't recurse back through this transport.
+
 ## Formats
 
 Every format used by `createLogger` is also exported for direct use with your own winston setup.
