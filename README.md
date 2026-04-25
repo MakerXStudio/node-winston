@@ -258,6 +258,8 @@ const logger = createLogger({
 
 In-flight dispatches are tracked internally and drained via `Promise.allSettled` on `close()`, and any rejection from the handler is routed to the supplied `logError` so a failing endpoint can't recurse back through this transport.
 
+`CallbackTransport` filters on the string `info.level` rather than the triple-beam `LEVEL` symbol, so the `level` option remains accurate when paired with `mapAuditLevelForOtel` (which rewrites the symbol but leaves the string untouched). For the same reason it sidesteps the `mapAuditLevelForOtel` + `level: 'audit'` guard in `createLogger` — the option is intercepted by the transport rather than passed down to the base `winston-transport` class.
+
 ## Formats
 
 Every format used by `createLogger` is also exported for direct use with your own winston setup.
