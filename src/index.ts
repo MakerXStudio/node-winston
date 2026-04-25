@@ -34,6 +34,7 @@ export * from './redact-values'
 export * from './serialize-error'
 export * from './serialize-error-format'
 export * from './map-audit-level-for-otel'
+export * from './utils'
 
 // winstonjs' default levels have debug and verbose reversed, which is confusing and causes filtering issues with Seq,
 // CloudWatch etc (given they assume Verbose/Trace should be the lowest/noisiest log level).
