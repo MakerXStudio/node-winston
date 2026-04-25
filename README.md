@@ -22,6 +22,7 @@ Breaking changes:
 - `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the unredacted object, move omit/redact handling into that transport's format.
 - A new `audit` level sits between `warn` and `info`. Loggers configured at `level: 'info'` (or more verbose) will now include `audit` messages; loggers at `level: 'warn'` or higher still filter them out.
 - Pass a custom `levels` map via `loggerOptions` to opt out of the default level set (including `audit`); the returned logger type narrows to your keys.
+- Submodule deep-imports (e.g. `@makerx/node-winston/redact-format`, `@makerx/node-winston/serialize-error`) are no longer exported. The package's `exports` field declares a single `.` entry; every public format, helper and type is re-exported from the root, so import them from `@makerx/node-winston` directly. The `./serialize-error` subpath in particular has no replacement: `serializeError` is still re-exported from the root, but for direct use of the underlying serializer, import from the [`serialize-error`](https://www.npmjs.com/package/serialize-error) peer dependency — we no longer wrap it in a dedicated subpath.
 
 New functionality:
 
