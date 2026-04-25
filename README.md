@@ -30,7 +30,8 @@ New functionality:
 - Errors nested inside structured metadata are now fully serialised at the logger level (not just the Console transport) via the new `serializeErrorFormat`. It walks the whole info object — including nested objects and arrays — replacing every `Error` with a plain object that carries `name`, `message` and `stack`. The serializer is pluggable: pass `errorSerializer` to `createLogger` (or `serializer` to `serializeErrorFormat` directly) to swap in your own transformation — useful when migrating from a winston-transport patch that already normalises errors.
 - `createLogger` is now generic over the level map. When you pass `loggerOptions.levels`, the returned logger's method signatures narrow to your level keys (`logger.fatal(...)` becomes valid, `logger.audit` becomes a type error).
 - Colours for the default levels (including `audit`) are registered on first use of the default levels, so `colorize` / pretty output works out of the box without a module-load side effect.
-- `defaultLevels` is exported directly if you want to extend or re-use it.
+- `defaultLevels` and `defaultLevelColors` are exported directly if you want to extend or re-use them.
+- `winstonDefaultLevels` and `winstonDefaultLevelColors` re-export winston's stock `npm` level set (`error`/`warn`/`info`/`http`/`verbose`/`debug`/`silly`) so consumers can opt back into the standard winston levels via `loggerOptions.levels` — colours register automatically on first use.
 
 ## Creating a Logger
 
@@ -81,6 +82,18 @@ const logger = createLogger({
 addColors({ fatal: 'red', error: 'red', info: 'green', trace: 'cyan' })
 
 logger.fatal('process is exiting') // typed; logger.audit would be a type error
+```
+
+To opt back into winston's stock npm levels (`error`/`warn`/`info`/`http`/`verbose`/`debug`/`silly`) — for example to integrate with tooling that assumes them — pass the re-exported `winstonDefaultLevels`. Colours register automatically on first use:
+
+```ts
+import { createLogger, winstonDefaultLevels } from '@makerx/node-winston'
+
+const logger = createLogger({
+  loggerOptions: { levels: winstonDefaultLevels, level: 'silly' },
+})
+
+logger.http('GET /items') // typed; logger.audit would be a type error
 ```
 
 ### Shipping the audit level via OpenTelemetry

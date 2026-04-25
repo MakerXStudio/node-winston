@@ -1,8 +1,8 @@
 import { LEVEL } from 'triple-beam'
-import { format } from 'winston'
+import { config, format } from 'winston'
 import TransportStream from 'winston-transport'
 import { describe, expect, it } from 'vitest'
-import { createLogger } from './index'
+import { createLogger, defaultLevelColors, defaultLevels, winstonDefaultLevelColors, winstonDefaultLevels } from './index'
 
 describe('logger', () => {
   it('verbose logs are screened out when level is debug', () => {
@@ -71,6 +71,57 @@ describe('createLogger custom levels', () => {
     expect(transport.logs.map((l) => l.level)).toEqual(['fatal', 'trace'])
     // @ts-expect-error audit is not part of the custom level set
     logger.audit
+  })
+})
+
+describe('default level exports', () => {
+  it('exports defaultLevels with the audit tier between warn and info', () => {
+    expect(defaultLevels).toEqual({ error: 0, warn: 1, audit: 2, info: 3, debug: 4, verbose: 5 })
+  })
+
+  it('exports defaultLevelColors covering every default level', () => {
+    expect(Object.keys(defaultLevelColors).sort()).toEqual(Object.keys(defaultLevels).sort())
+  })
+
+  it('exports winstonDefaultLevels matching winston.config.npm.levels', () => {
+    expect(winstonDefaultLevels).toEqual(config.npm.levels)
+  })
+
+  it('exports winstonDefaultLevelColors matching winston.config.npm.colors', () => {
+    expect(winstonDefaultLevelColors).toEqual(config.npm.colors)
+  })
+})
+
+describe('createLogger with winstonDefaultLevels', () => {
+  it('exposes winston npm methods (http/silly) and rejects audit at the type level', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      loggerOptions: { levels: winstonDefaultLevels, level: 'silly' },
+    })
+    logger.error('e')
+    logger.warn('w')
+    logger.info('i')
+    logger.http('h')
+    logger.verbose('v')
+    logger.debug('d')
+    logger.silly('s')
+    expect(transport.logs.map((l) => l.level)).toEqual(['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'])
+    // @ts-expect-error audit is not part of the winston default level set
+    logger.audit
+  })
+
+  it('orders winston levels with debug noisier than verbose (opposite of defaultLevels)', () => {
+    const verboseTransport = new InMemoryTransport({})
+    const verboseLogger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [verboseTransport],
+      loggerOptions: { levels: winstonDefaultLevels, level: 'verbose' },
+    })
+    verboseLogger.verbose('seen')
+    verboseLogger.debug('filtered')
+    expect(verboseTransport.logs.map((l) => l.message)).toEqual(['seen'])
   })
 })
 
