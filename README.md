@@ -17,20 +17,24 @@ Requires Node.js `>=22.12` (for flag-free `require(esm)` support, needed by `ser
 Breaking changes:
 
 - The `lodash` dependency has been replaced with `es-toolkit` as a peer dependency.
-- `serialize-error` is now a peer dependency used for `Error` serialisation — consumers get the well-tested package behaviour (own-prop capture, `cause` chains, circular refs) out of the box.
 - Node.js `>=22.12` is required (for flag-free `require(esm)`, needed by `serialize-error`'s ESM-only publish).
-- `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the unredacted object, move omit/redact handling into that transport's format.
+- **Error serialisation has changed.** `serialize-error` is now a peer dependency, and `serializeError` delegates to it instead of v1's hand-rolled `{ message, stack, ...rest }` shape. The serialised wire format now includes `name`, follows `cause` chains, walks own enumerable properties, and handles circular references — so any consumer asserting against the exact v1 shape will need to update.
+- **Errors nested in structured metadata are now serialised on every transport, not just the Console transport.** v1 only ran `serializableErrorReplacer` inside the Console's `format.json`, so custom transports received the raw `Error` instance (with non-enumerable `message`/`stack` hidden). v2 prepends the new `serializeErrorFormat` at the logger level, which walks the full info tree and substitutes plain objects before any transport sees them. If a custom transport relied on receiving an `Error` instance, switch it to read the serialised shape — or pass `errorSerializer` to `createLogger` (or `serializer` to `serializeErrorFormat` directly) to plug in your own transformation.
+- `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the un-omitted object, move omit handling into that transport's format.
 - A new `audit` level sits between `warn` and `info`. Loggers configured at `level: 'info'` (or more verbose) will now include `audit` messages; loggers at `level: 'warn'` or higher still filter them out.
 - Pass a custom `levels` map via `loggerOptions` to opt out of the default level set (including `audit`); the returned logger type narrows to your keys.
+- Submodule deep-imports (e.g. `@makerx/node-winston/redact-format`, `@makerx/node-winston/serialize-error`) are no longer exported. The package's `exports` field declares a single `.` entry; every public format, helper and type is re-exported from the root, so import them from `@makerx/node-winston` directly. The `./serialize-error` subpath in particular has no replacement: `serializeError` is still re-exported from the root, but for direct use of the underlying serializer, import from the [`serialize-error`](https://www.npmjs.com/package/serialize-error) peer dependency — we no longer wrap it in a dedicated subpath.
 
 New functionality:
 
-- New `redactPaths` / `redactedValue` options replace values at dot-notation paths across every transport. Also available as the standalone `redactFormat`, and the `redactValues` / `redactValuesWith` helpers for direct use.
+- New `redactPaths` / `redactedValue` options replace values at dot-notation paths with a placeholder (default `'<redacted>'`). Like `omitPaths` they apply at the logger level and affect every transport, so they're a drop-in replacement for any hand-rolled redaction you previously bolted onto `loggerOptions.format` or a custom transport. Also exported as the standalone `redactFormat`, plus the `redactValues` / `redactValuesWith` helpers for direct use.
 - New `flatten` / `flattenReplacer` options serialise every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape suited to OTEL + Azure Log Analytics and other scalar-only aggregators. Also available as `jsonStringifyValuesFormat` and `jsonStringifyValues`.
-- Errors nested inside structured metadata are now fully serialised at the logger level (not just the Console transport) via the new `serializeErrorFormat`. It walks the whole info object — including nested objects and arrays — replacing every `Error` with a plain object that carries `name`, `message` and `stack`. The serializer is pluggable: pass `errorSerializer` to `createLogger` (or `serializer` to `serializeErrorFormat` directly) to swap in your own transformation — useful when migrating from a winston-transport patch that already normalises errors.
+- The new `serializeErrorFormat` is exported for direct use in your own format chains, and accepts a `serializer` override for swapping in custom error normalisation.
 - `createLogger` is now generic over the level map. When you pass `loggerOptions.levels`, the returned logger's method signatures narrow to your level keys (`logger.fatal(...)` becomes valid, `logger.audit` becomes a type error).
 - Colours for the default levels (including `audit`) are registered on first use of the default levels, so `colorize` / pretty output works out of the box without a module-load side effect.
-- `defaultLevels` is exported directly if you want to extend or re-use it.
+- `defaultLevels` and `defaultLevelColors` are exported directly if you want to extend or re-use them.
+- `winstonDefaultLevels` and `winstonDefaultLevelColors` re-export winston's stock `npm` level set (`error`/`warn`/`info`/`http`/`verbose`/`debug`/`silly`) so consumers can opt back into the standard winston levels via `loggerOptions.levels` — colours register automatically on first use.
+- New `mapAuditLevelForOtel` option (and standalone format) rewrites the triple-beam `LEVEL` symbol from `audit` to `info` so OTEL maps the record onto a known severity tier, while preserving the original level on a `logLevel` property. See [Shipping the audit level via OpenTelemetry](#shipping-the-audit-level-via-opentelemetry).
 
 ## Creating a Logger
 
@@ -81,6 +85,18 @@ const logger = createLogger({
 addColors({ fatal: 'red', error: 'red', info: 'green', trace: 'cyan' })
 
 logger.fatal('process is exiting') // typed; logger.audit would be a type error
+```
+
+To opt back into winston's stock npm levels (`error`/`warn`/`info`/`http`/`verbose`/`debug`/`silly`) — for example to integrate with tooling that assumes them — pass the re-exported `winstonDefaultLevels`. Colours register automatically on first use:
+
+```ts
+import { createLogger, winstonDefaultLevels } from '@makerx/node-winston'
+
+const logger = createLogger({
+  loggerOptions: { levels: winstonDefaultLevels, level: 'silly' },
+})
+
+logger.http('GET /items') // typed; logger.audit would be a type error
 ```
 
 ### Shipping the audit level via OpenTelemetry

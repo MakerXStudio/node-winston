@@ -1,6 +1,6 @@
 {
   "name": "@makerx/node-winston",
-  "version": "2.0.0-beta.5",
+  "version": "2.0.0-beta.6",
   "private": false,
   "description": "A set of winston formats, console transport and logger creation functions",
   "author": "MakerX",
@@ -81,5 +81,8 @@
     "@colors/colors": "^1.6.0",
     "yamlify-object": "^3.0.0",
     "yamlify-object-colors": "^1.0.3"
+  },
+  "overrides": {
+    "postcss": "^8.5.10"
   }
 }

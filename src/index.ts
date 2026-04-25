@@ -50,13 +50,37 @@ export const defaultLevels = {
 // Colours for the default levels, registered on first `createLogger` call that uses them
 // so importing a single format doesn't silently mutate winston's global colour map.
 // Callers who override `levels` should register their own colours via `winston.addColors`.
-const defaultLevelColors = {
+export const defaultLevelColors = {
   error: 'red',
   warn: 'yellow',
   audit: 'magenta',
   info: 'green',
   debug: 'blue',
   verbose: 'cyan',
+}
+
+// Winston's stock npm levels — exposed so consumers can opt back into them via
+// `loggerOptions.levels` without reaching into `winston.config.npm`. Re-declared here (rather than
+// re-exported from winston) so the keys stay literal and the generic `createLogger` overload narrows
+// the returned logger's method signatures correctly.
+export const winstonDefaultLevels = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  http: 3,
+  verbose: 4,
+  debug: 5,
+  silly: 6,
+}
+
+export const winstonDefaultLevelColors = {
+  error: 'red',
+  warn: 'yellow',
+  info: 'green',
+  http: 'green',
+  verbose: 'cyan',
+  debug: 'blue',
+  silly: 'magenta',
 }
 
 let defaultColorsRegistered = false
@@ -66,6 +90,13 @@ const registerDefaultColors = () => {
   defaultColorsRegistered = true
 }
 
+let winstonDefaultColorsRegistered = false
+const registerWinstonDefaultColors = () => {
+  if (winstonDefaultColorsRegistered) return
+  addColors(winstonDefaultLevelColors)
+  winstonDefaultColorsRegistered = true
+}
+
 export type LoggerWithLevels<L extends Record<string, number>> = Pick<WinstonLogger, 'log'> & {
   child(options: object): LoggerWithLevels<L>
 } & {
@@ -73,6 +104,7 @@ export type LoggerWithLevels<L extends Record<string, number>> = Pick<WinstonLog
 }
 
 export type Logger = LoggerWithLevels<typeof defaultLevels>
+export type WinstonDefaultLogger = LoggerWithLevels<typeof winstonDefaultLevels>
 
 export interface CreateLoggerOptions {
   /**
@@ -201,8 +233,12 @@ export function createLogger(options: CreateLoggerOptions): any {
     mapAuditLevelForOtel: mapAuditForOtel,
   } = options
 
-  // register default colours on first use of the default levels so `colorize` / pretty output works
-  if (!options.loggerOptions?.levels) registerDefaultColors()
+  // register default colours on first use of a known level set so `colorize` / pretty output works.
+  // Detected by referential equality: an unknown `levels` map means the caller is responsible for
+  // registering colours themselves via `winston.addColors`.
+  const userLevels = options.loggerOptions?.levels
+  if (!userLevels || userLevels === defaultLevels) registerDefaultColors()
+  else if (userLevels === winstonDefaultLevels) registerWinstonDefaultColors()
 
   // Guard against silent audit-record loss: the format rewrites the LEVEL symbol from 'audit' to 'info',
   // which the filter on any transport set to level:'audit' would then drop (info is more verbose than audit).
