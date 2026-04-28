@@ -22,6 +22,6 @@ export const prettyConsoleFormat = (): Format =>
     format.printf((info: TransformableInfo) => {
       const { level, timestamp, message, ...meta } = info
       const yaml = yamlify(meta)
-      return `[${level}] ${colors.grey(timestamp)} ${message}${yaml}`
+      return `[${level}] ${colors.grey(timestamp as string)} ${message}${yaml}`
     })
   )
