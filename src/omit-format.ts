@@ -1,4 +1,3 @@
-import { ValueKeyIteratee } from 'lodash'
 import omit from 'lodash.omit'
 import { TransformableInfo } from 'logform'
 import { format } from 'winston'
