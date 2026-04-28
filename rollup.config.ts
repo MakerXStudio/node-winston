@@ -3,6 +3,9 @@ import typescript from '@rollup/plugin-typescript'
 import { isAbsolute } from 'node:path'
 import type { RollupOptions } from 'rollup'
 
+const isBareModuleImport = (id: string, importer: string | undefined) =>
+  importer !== undefined && !id.startsWith('.') && !isAbsolute(id)
+
 const config: RollupOptions = {
   input: ['src/index.ts'],
   output: [
@@ -33,7 +36,7 @@ const config: RollupOptions = {
     moduleSideEffects: false,
     propertyReadSideEffects: false,
   },
-  external: (id, importer) => importer !== undefined && !id.startsWith('.') && !isAbsolute(id),
+  external: isBareModuleImport,
   plugins: [
     typescript({
       tsconfig: 'tsconfig.build.json',
