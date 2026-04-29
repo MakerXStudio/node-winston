@@ -180,8 +180,8 @@ export interface CreateLoggerOptions {
    * Custom serializer used whenever an `Error` instance is encountered, both by the logger-level
    * `serializeErrorFormat` (walks the full info tree) and by the Console transport's
    * `format.json` replacer (safety net for errors that slip through). Defaults to the library's
-   * `serializeError`, which delegates to the
-   * [`serialize-error`](https://www.npmjs.com/package/serialize-error) package.
+   * `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when
+   * non-enumerable, walks own enumerable properties, and is safe against circular references.
    */
   errorSerializer?: ErrorSerializer
 
