@@ -5,8 +5,7 @@ import { ErrorSerializer, serializeError } from './serialize-error'
 export interface SerializeErrorFormatOptions {
   /**
    * Custom serializer used to turn each `Error` instance into a plain object.
-   * Defaults to the library's {@link serializeError} (which delegates to the
-   * [`serialize-error`](https://www.npmjs.com/package/serialize-error) package).
+   * Defaults to the library's {@link serializeError}.
    */
   serializer?: ErrorSerializer
 }
