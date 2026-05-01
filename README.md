@@ -1,6 +1,6 @@
 # Node Winston
 
-A set of [winston](https://github.com/winstonjs/winston) [formats](https://github.com/winstonjs/winston#formats), a console transport and a logger factory that simplify structured logging in Node.js services — with colourised YAML output for local development.
+A set of [winston](https://github.com/winstonjs/winston) [formats](https://github.com/winstonjs/winston#formats), a console transport and a logger factory that simplify structured logging in Node.js services — with colourised YAML output for local development and support for OTEL integration.
 
 ## Installation
 
@@ -8,33 +8,13 @@ A set of [winston](https://github.com/winstonjs/winston) [formats](https://githu
 npm install @makerx/node-winston
 ```
 
-`winston`, `logform`, `winston-transport`, `triple-beam` and `es-toolkit` are declared as peer dependencies, so bring your own versions (>=3, >=2, >=4, >=1, >=1 respectively).
+`winston`, `logform`, `winston-transport`, `triple-beam` and `es-toolkit` are peer dependencies so the package shares a single instance with your app's `winston`. npm 7+ and pnpm install them automatically; on Yarn Classic, install them yourself.
 
 Requires Node.js `>=20`.
 
-## Migrating from v1
+### Upgrading from v1
 
-Breaking changes:
-
-- The `lodash` dependency has been replaced with `es-toolkit` as a peer dependency.
-- Node.js `>=20` is required.
-- **Error serialisation has changed.** `serializeError` now captures `name` (in addition to `message` and `stack`), follows `cause` chains, walks own enumerable properties, captures `AggregateError.errors`, stringifies `BigInt` values, replaces `Buffer` and stream values with sentinel strings, and is safe against circular references. Any consumer asserting against v1's exact `{ message, stack, ...rest }` shape will need to update.
-- **Errors nested in structured metadata are now serialised on every transport, not just the Console transport.** v1 only ran `serializableErrorReplacer` inside the Console's `format.json`, so custom transports received the raw `Error` instance (with non-enumerable `message`/`stack` hidden). v2 prepends the new `serializeErrorFormat` at the logger level, which walks the full info tree and substitutes plain objects before any transport sees them. If a custom transport relied on receiving an `Error` instance, switch it to read the serialised shape — or pass `errorSerializer` to `createLogger` (or `serializer` to `serializeErrorFormat` directly) to plug in your own transformation.
-- `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the un-omitted object, move omit handling into that transport's format.
-- A new `audit` level sits between `warn` and `info`. Loggers configured at `level: 'info'` (or more verbose) will now include `audit` messages; loggers at `level: 'warn'` or higher still filter them out.
-- Pass a custom `levels` map via `loggerOptions` to opt out of the default level set (including `audit`); the returned logger type narrows to your keys.
-- Submodule deep-imports (e.g. `@makerx/node-winston/redact-format`, `@makerx/node-winston/serialize-error`) are no longer exported. The package's `exports` field declares a single `.` entry; every public format, helper and type is re-exported from the root, so import them from `@makerx/node-winston` directly.
-
-New functionality:
-
-- New `redactPaths` / `redactedValue` options replace values at dot-notation paths with a placeholder (default `'<redacted>'`). Like `omitPaths` they apply at the logger level and affect every transport, so they're a drop-in replacement for any hand-rolled redaction you previously bolted onto `loggerOptions.format` or a custom transport. Also exported as the standalone `redactFormat`, plus the `redactValues` / `redactValuesWith` helpers for direct use.
-- New `flatten` / `flattenReplacer` options serialise every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape suited to OTEL + Azure Log Analytics and other scalar-only aggregators. Also available as `jsonStringifyValuesFormat` and `jsonStringifyValues`.
-- The new `serializeErrorFormat` is exported for direct use in your own format chains, and accepts a `serializer` override for swapping in custom error normalisation.
-- `createLogger` is now generic over the level map. When you pass `loggerOptions.levels`, the returned logger's method signatures narrow to your level keys (`logger.fatal(...)` becomes valid, `logger.audit` becomes a type error).
-- Colours for the default levels (including `audit`) are registered on first use of the default levels, so `colorize` / pretty output works out of the box without a module-load side effect.
-- `defaultLevels` and `defaultLevelColors` are exported directly if you want to extend or re-use them.
-- `winstonDefaultLevels` and `winstonDefaultLevelColors` re-export winston's stock `npm` level set (`error`/`warn`/`info`/`http`/`verbose`/`debug`/`silly`) so consumers can opt back into the standard winston levels via `loggerOptions.levels` — colours register automatically on first use.
-- New `mapAuditLevelForOtel` option (and standalone format) rewrites the triple-beam `LEVEL` symbol from `audit` to `info` so OTEL maps the record onto a known severity tier, while preserving the original level on a `logLevel` property. See [Shipping the audit level via OpenTelemetry](#shipping-the-audit-level-via-opentelemetry).
+See [Migrating from v1](#migrating-from-v1) at the bottom for breaking changes and new functionality.
 
 ## Creating a Logger
 
@@ -56,7 +36,7 @@ Formats are applied in two layers:
 | `omitPaths`            | `string[]`                | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                                  |
 | `redactPaths`          | `string[]`                | Dot-notation paths whose values are replaced with `redactedValue`. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                  |
 | `redactedValue`        | `string`                  | Replacement value used by `redactPaths`. Defaults to `'<redacted>'`.                                                                                                                                                                                                                                                                                                        |
-| `flatten`              | `boolean`                 | When `true`, serialises every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape for transports that expect scalar values (e.g. OTEL + Azure Log Analytics).                                                                                                                                                                        |
+| `flatten`              | `boolean`                 | When `true`, serialises every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape for transports that expect scalar values. See [OpenTelemetry](#opentelemetry).                                                                                                                                                                     |
 | `flattenReplacer`      | `(key, value) => any`     | Optional `JSON.stringify` replacer used when `flatten` serialises each top-level value.                                                                                                                                                                                                                                                                                     |
 | `errorSerializer`      | `ErrorSerializer`         | Custom serializer applied to every `Error` instance at the logger level (via `serializeErrorFormat`) and as the Console transport's `format.json` replacer. Defaults to the library's `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when non-enumerable, walks own enumerable properties, and is safe against circular references. |
 | `mapAuditLevelForOtel` | `boolean`                 | When `true`, rewrites the triple-beam `LEVEL` from `audit` to `info` and copies the original onto `logLevel` for OTEL compatibility. See [Shipping the audit level via OpenTelemetry](#shipping-the-audit-level-via-opentelemetry).                                                                                                                                         |
@@ -98,22 +78,6 @@ const logger = createLogger({
 
 logger.http('GET /items') // typed; logger.audit would be a type error
 ```
-
-### Shipping the audit level via OpenTelemetry
-
-[`@opentelemetry/instrumentation-winston`](https://www.npmjs.com/package/@opentelemetry/instrumentation-winston) auto-installs [`@opentelemetry/winston-transport`](https://www.npmjs.com/package/@opentelemetry/winston-transport), which derives OTEL's `severityText` / `severityNumber` from Winston's triple-beam `LEVEL` symbol and strips the string `level` property before building attributes. OTEL's log spec only defines a fixed severity enumeration (trace/debug/info/warn/error/fatal), so Winston's custom `audit` level arrives with `severityNumber: undefined` and no queryable record of the original level. This is most visible on Azure Monitor / Log Analytics (which ignores records without a mapped severity), but affects any OTEL backend that relies on the spec-defined severity.
-
-Set `mapAuditLevelForOtel: true` to opt in:
-
-```ts
-const logger = createLogger({
-  mapAuditLevelForOtel: true,
-})
-```
-
-The format rewrites the triple-beam `LEVEL` symbol from `audit` to `info` (so OTEL maps the record onto `info` severity) and copies the original level onto a `logLevel` property (so it survives as an OTEL attribute — e.g. queryable as `customDimensions.logLevel == "audit"` in Azure Log Analytics). The string `info.level` is left as `audit` for other transports — so local Console JSON output still shows `"level": "audit"`.
-
-**Caveat:** the `LEVEL` symbol also drives transport-level filtering, so a logger, console, or transport explicitly set to `level: 'audit'` would silently drop these records after the rewrite (`info` is more verbose than `audit`). `createLogger` detects this combination and throws at construction — use `'info'` (or a more verbose level) instead. Only enable this option when shipping logs via OTEL — typically a deployed-environment concern.
 
 ### Example: environment-driven configuration
 
@@ -260,6 +224,42 @@ In-flight dispatches are tracked internally and drained via `Promise.allSettled`
 
 `CallbackTransport` filters on the string `info.level` rather than the triple-beam `LEVEL` symbol, so the `level` option remains accurate when paired with `mapAuditLevelForOtel` (which rewrites the symbol but leaves the string untouched). For the same reason it sidesteps the `mapAuditLevelForOtel` + `level: 'audit'` guard in `createLogger` — the option is intercepted by the transport rather than passed down to the base `winston-transport` class.
 
+## OpenTelemetry
+
+When shipping logs via OpenTelemetry, install [`@opentelemetry/instrumentation-winston`](https://www.npmjs.com/package/@opentelemetry/instrumentation-winston) — it auto-installs [`@opentelemetry/winston-transport`](https://www.npmjs.com/package/@opentelemetry/winston-transport), which forwards each winston record through the OpenTelemetry Logs SDK. Two `createLogger` options shape that pipeline: `flatten: true` is recommended for any OTEL setup, and `mapAuditLevelForOtel: true` when using the default level set (which includes `audit`).
+
+### Flattening nested metadata
+
+OTEL's log attribute model has historically been flat — the JS API only accepts strings, numbers, booleans, and homogeneous arrays of those as attribute values, so nested objects in winston metadata aren't valid attributes. `@opentelemetry/winston-transport` copies them onto the attribute bag as-is, and downstream handling varies by exporter and backend (some stringify, some drop, some partially walk).
+
+Complex attribute types are landing in the spec ([announced for OTLP 1.9](https://opentelemetry.io/blog/2025/complex-attribute-types/) in 2025) but support is still rolling out across SDKs, and the official guidance is to prefer flat attributes anyway since most backends — Azure Log Analytics included — don't index or query nested values.
+
+Set `flatten: true` to serialise every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape that survives the OTEL pipeline cleanly:
+
+```ts
+const logger = createLogger({
+  flatten: true,
+})
+```
+
+Pair with `flattenReplacer` to customise the per-value `JSON.stringify` replacer.
+
+### Shipping the audit level via OpenTelemetry
+
+`@opentelemetry/winston-transport` derives OTEL's `severityText` / `severityNumber` from Winston's triple-beam `LEVEL` symbol and strips the string `level` property before building attributes. OTEL's log spec only defines a fixed severity enumeration (trace/debug/info/warn/error/fatal), so Winston's custom `audit` level arrives with `severityNumber: undefined` and no queryable record of the original level. This is most visible on Azure Monitor / Log Analytics (which ignores records without a mapped severity), but affects any OTEL backend that relies on the spec-defined severity.
+
+Set `mapAuditLevelForOtel: true` to opt in:
+
+```ts
+const logger = createLogger({
+  mapAuditLevelForOtel: true,
+})
+```
+
+The format rewrites the triple-beam `LEVEL` symbol from `audit` to `info` (so OTEL maps the record onto `info` severity) and copies the original level onto a `logLevel` property (so it survives as an OTEL attribute — e.g. queryable as `customDimensions.logLevel == "audit"` in Azure Log Analytics). The string `info.level` is left as `audit` for other transports — so local Console JSON output still shows `"level": "audit"`.
+
+**Caveat:** the `LEVEL` symbol also drives transport-level filtering, so a logger, console, or transport explicitly set to `level: 'audit'` would silently drop these records after the rewrite (`info` is more verbose than `audit`). `createLogger` detects this combination and throws at construction — use `'info'` (or a more verbose level) instead. Only enable this option when shipping logs via OTEL — typically a deployed-environment concern.
+
 ## Formats
 
 Every format used by `createLogger` is also exported for direct use with your own winston setup.
@@ -336,3 +336,27 @@ const serializer = (error: Error) => ({ kind: error.name, detail: error.message 
 
 format.combine(serializeErrorFormat({ serializer }), format.json({ replacer: createSerializableErrorReplacer(serializer) }))
 ```
+
+## Migrating from v1
+
+Breaking changes:
+
+- The `lodash` dependency has been replaced with `es-toolkit` as a peer dependency.
+- Node.js `>=20` is required.
+- **Error serialisation has changed.** `serializeError` now captures `name` (in addition to `message` and `stack`), follows `cause` chains, walks own enumerable properties, captures `AggregateError.errors`, stringifies `BigInt` values, replaces `Buffer` and stream values with sentinel strings, and is safe against circular references. Any consumer asserting against v1's exact `{ message, stack, ...rest }` shape will need to update.
+- **Errors nested in structured metadata are now serialised on every transport, not just the Console transport.** v1 only ran `serializableErrorReplacer` inside the Console's `format.json`, so custom transports received the raw `Error` instance (with non-enumerable `message`/`stack` hidden). v2 prepends the new `serializeErrorFormat` at the logger level, which walks the full info tree and substitutes plain objects before any transport sees them. If a custom transport relied on receiving an `Error` instance, switch it to read the serialised shape — or pass `errorSerializer` to `createLogger` (or `serializer` to `serializeErrorFormat` directly) to plug in your own transformation.
+- `omitPaths` now applies at the logger level and affects every transport, not just the Console transport. If you added custom transports expecting the un-omitted object, move omit handling into that transport's format.
+- A new `audit` level sits between `warn` and `info`. Loggers configured at `level: 'info'` (or more verbose) will now include `audit` messages; loggers at `level: 'warn'` or higher still filter them out.
+- Pass a custom `levels` map via `loggerOptions` to opt out of the default level set (including `audit`); the returned logger type narrows to your keys.
+- Submodule deep-imports (e.g. `@makerx/node-winston/redact-format`, `@makerx/node-winston/serialize-error`) are no longer exported. The package's `exports` field declares a single `.` entry; every public format, helper and type is re-exported from the root, so import them from `@makerx/node-winston` directly.
+
+New functionality:
+
+- New `redactPaths` / `redactedValue` options replace values at dot-notation paths with a placeholder (default `'<redacted>'`). Like `omitPaths` they apply at the logger level and affect every transport, so they're a drop-in replacement for any hand-rolled redaction you previously bolted onto `loggerOptions.format` or a custom transport. Also exported as the standalone `redactFormat`, plus the `redactValues` / `redactValuesWith` helpers for direct use.
+- New `flatten` / `flattenReplacer` options serialise every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape suited to OTEL + Azure Log Analytics and other scalar-only aggregators. Also available as `jsonStringifyValuesFormat` and `jsonStringifyValues`.
+- The new `serializeErrorFormat` is exported for direct use in your own format chains, and accepts a `serializer` override for swapping in custom error normalisation.
+- `createLogger` is now generic over the level map. When you pass `loggerOptions.levels`, the returned logger's method signatures narrow to your level keys (`logger.fatal(...)` becomes valid, `logger.audit` becomes a type error).
+- Colours for the default levels (including `audit`) are registered on first use of the default levels, so `colorize` / pretty output works out of the box without a module-load side effect.
+- `defaultLevels` and `defaultLevelColors` are exported directly if you want to extend or re-use them.
+- `winstonDefaultLevels` and `winstonDefaultLevelColors` re-export winston's stock `npm` level set (`error`/`warn`/`info`/`http`/`verbose`/`debug`/`silly`) so consumers can opt back into the standard winston levels via `loggerOptions.levels` — colours register automatically on first use.
+- New `mapAuditLevelForOtel` option (and standalone format) rewrites the triple-beam `LEVEL` symbol from `audit` to `info` so OTEL maps the record onto a known severity tier, while preserving the original level on a `logLevel` property. See [Shipping the audit level via OpenTelemetry](#shipping-the-audit-level-via-opentelemetry).

@@ -253,9 +253,10 @@ export function createLogger(options: CreateLoggerOptions): any {
     })
     if (misconfigured.length > 0) {
       throw new Error(
-        `mapAuditLevelForOtel rewrites the triple-beam LEVEL symbol from 'audit' to 'info', ` +
-          `which would be dropped by the 'audit'-level filter on ${misconfigured.join(', ')}. ` +
-          `Use 'info' (or a more verbose level) instead.`,
+        `Set ${misconfigured.join(', ')} to 'info' (or a more verbose level) instead of 'audit'. ` +
+          `mapAuditLevelForOtel rewrites the triple-beam LEVEL symbol from 'audit' to 'info' so ` +
+          `OTEL maps the record onto a known severity tier — an 'audit'-level filter would then ` +
+          `drop those records after the rewrite.`,
       )
     }
   }
