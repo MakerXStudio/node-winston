@@ -274,6 +274,8 @@ Every format used by `createLogger` is also exported for direct use with your ow
 | `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                         |
 | `mapAuditLevelForOtel`      | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration.           |
 
+`redactFormat` paths accept plain keys (`email`, matched at every level), dot-notation paths (`user.email`), and `[*]` array wildcards to iterate every element of an array segment — for example `files[*].name`, `users[*].addresses[*].zip`, or `tags[*]` to redact each element of a primitive array.
+
 Direct usage example:
 
 ```ts
@@ -281,7 +283,10 @@ import { format, createLogger, transports } from 'winston'
 import { redactFormat, serializeErrorFormat } from '@makerx/node-winston'
 
 const logger = createLogger({
-  format: format.combine(serializeErrorFormat(), redactFormat({ paths: ['user.email'] })),
+  format: format.combine(
+    serializeErrorFormat(),
+    redactFormat({ paths: ['user.email', 'files[*].name'] }),
+  ),
   transports: [new transports.Console({ format: format.json() })],
 })
 ```
