@@ -202,6 +202,47 @@ describe('createLogger redactPaths', () => {
     const info = transport.logs[0] as { users: { email: string }[] }
     expect(info.users.map((u) => u.email)).toEqual(['<redacted>', '<redacted>'])
   })
+
+  it('redacts every array element using a [*] wildcard path', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['files[*].name'],
+    })
+    logger.info('hello', {
+      files: [
+        { name: 'a.txt', size: 1 },
+        { name: 'b.txt', size: 2 },
+      ],
+      name: 'top',
+    })
+    const info = transport.logs[0] as { files: { name: string; size: number }[]; name: string }
+    expect(info.files.map((f) => f.name)).toEqual(['<redacted>', '<redacted>'])
+    expect(info.files.map((f) => f.size)).toEqual([1, 2])
+    // Wildcard is path-scoped, so a top-level `name` is not touched.
+    expect(info.name).toBe('top')
+  })
+
+  it('supports nested [*] wildcards and bare-array element redaction', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['users[*].addresses[*].zip', 'tags[*]'],
+    })
+    logger.info('hello', {
+      users: [{ addresses: [{ zip: '1000' }, { zip: '2000' }] }, { addresses: [{ zip: '3000' }] }],
+      tags: ['secret', 'public'],
+    })
+    const info = transport.logs[0] as {
+      users: { addresses: { zip: string }[] }[]
+      tags: string[]
+    }
+    expect(info.users[0].addresses.map((a) => a.zip)).toEqual(['<redacted>', '<redacted>'])
+    expect(info.users[1].addresses[0].zip).toBe('<redacted>')
+    expect(info.tags).toEqual(['<redacted>', '<redacted>'])
+  })
 })
 
 describe('createLogger child loggers', () => {
