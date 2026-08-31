@@ -383,6 +383,49 @@ describe('createLogger mapAuditLevelForOtel', () => {
   })
 })
 
+describe('createLogger error as the whole record', () => {
+  // `logger.error(err)` makes the error the record. `message`, `stack` and `name` are not own
+  // enumerable properties, so a transport that spreads or enumerates it used to receive neither
+  // a message nor a stack.
+  it('gives a transport the message, name and stack', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error(Object.assign(new TypeError('boom'), { code: 'E_BOOM' }) as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({
+      name: 'TypeError',
+      message: 'boom',
+      code: 'E_BOOM',
+      level: 'error',
+    })
+    expect(transport.logs[0].stack).toContain('TypeError: boom')
+  })
+
+  it('still routes at the right level', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      loggerOptions: { level: 'warn' },
+    })
+
+    logger.error(new TypeError('kept') as unknown as string)
+    logger.info(new TypeError('filtered out') as unknown as string)
+
+    expect(transport.logs.map((l) => l.message)).toEqual(['kept'])
+  })
+
+  it('leaves a plain info object alone', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.log({ level: 'info', message: 'plain', stack: 'a string' })
+
+    expect(transport.logs[0]).toMatchObject({ message: 'plain', stack: 'a string' })
+  })
+})
+
 describe('createLogger DOMException', () => {
   // An operation cancelled through an `AbortSignal` rejects with a `DOMException`, whose `message` and `name` are
   // getter-only prototype accessors. A deep clone cannot rebuild one, so redaction used to throw a

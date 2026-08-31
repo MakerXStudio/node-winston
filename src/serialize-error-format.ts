@@ -53,11 +53,37 @@ const replaceErrors = (value: unknown, serializer: ErrorSerializer, seen: WeakSe
 }
 
 /**
+ * Replaces the record itself when it is an `Error`.
+ *
+ * `logger.error(err)` takes a winston branch of its own: it assigns `level` and the routing symbols
+ * onto the error and writes the error as the record. `message`, `stack` and `name` are not own
+ * enumerable properties of an `Error`, so every transport that spreads or enumerates the record
+ * loses them — `{ ...info }` yields neither a message nor a stack. Serializing lifts them onto a
+ * plain object.
+ *
+ * `level` and every own symbol are re-applied afterwards: they are winston's routing, not error
+ * data, and a custom serializer has no reason to return them. `message` is left to the serializer,
+ * so one that drops it produces a record without one, exactly as it already does for a nested
+ * error.
+ */
+const serializeRecord = (error: Error, serializer: ErrorSerializer): Record<string | symbol, unknown> => {
+  const record = serializer(error) as Record<string | symbol, unknown>
+  // Guarded because `serializeErrorFormat` is also usable outside `createLogger`, on a record
+  // winston has not stamped a level onto.
+  if ('level' in error) record.level = (error as unknown as { level: unknown }).level
+  for (const symbol of Object.getOwnPropertySymbols(error)) {
+    record[symbol] = (error as unknown as Record<symbol, unknown>)[symbol]
+  }
+  return record
+}
+
+/**
  * Walks the log info object, replacing any `Error` instances (including nested ones)
  * with the plain-object result of the configured serializer so downstream formats and
  * transports see JSON-serializable errors with `message` and `stack` intact.
  *
- * Only the top-level `info` object is mutated (to preserve winston's Symbol-keyed
+ * A record that is itself an `Error` is replaced outright: see {@link serializeRecord}. Otherwise
+ * only the top-level `info` object is mutated (to preserve winston's Symbol-keyed
  * routing props); nested objects and arrays are rebuilt, so caller-supplied metadata
  * references are never mutated.
  *
@@ -84,10 +110,10 @@ export const serializeErrorFormat = format((info, opts) => {
       seen.delete(value)
     }
   }
-  const record = info as unknown as Record<string | symbol, unknown>
+  const record = (info instanceof Error ? serializeRecord(info, serializer) : info) as unknown as Record<string | symbol, unknown>
   const seen = new WeakSet<object>([record])
   for (const key of Object.keys(record)) record[key] = walk(record[key], seen)
   const splat = record[SPLAT]
   if (Array.isArray(splat)) record[SPLAT] = replaceErrors(splat, serializer, new WeakSet<object>())
-  return info as TransformableInfo
+  return record as unknown as TransformableInfo
 })

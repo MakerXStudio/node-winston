@@ -123,4 +123,30 @@ describe('serializeErrorFormat', () => {
     expect(result[SPLAT][1].error).toMatchObject({ message: 'boom' })
     expect(result[SPLAT][1].when).toBeInstanceOf(Date)
   })
+  it('replaces a record that is itself an error, keeping level and the routing symbols', () => {
+    const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
+
+    expect(result).not.toBeInstanceOf(Error)
+    expect(result).toMatchObject({ name: 'TypeError', message: 'boom', level: 'error' })
+    expect(result.stack).toBeDefined()
+    expect(result[LEVEL]).toBe('error')
+  })
+
+  it('serialises a record that is itself an error with the configured serializer', () => {
+    const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
+    const fmt = serializeErrorFormat({ serializer: (e: Error) => ({ kind: e.name }) })
+
+    const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
+
+    expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
+    expect(result[LEVEL]).toBe('error')
+  })
+
+  it('leaves a plain info object that merely looks like a log record alone', () => {
+    const result = run({ message: 'not an error', stack: 'a string' })
+    expect(result).toMatchObject({ message: 'not an error', stack: 'a string' })
+  })
 })

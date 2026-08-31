@@ -295,14 +295,21 @@ const logger = createLogger({
 
 The `Error` class's `message` and `stack` properties [are not enumerable](https://stackoverflow.com/questions/18391212/is-it-not-possible-to-stringify-an-error-using-json-stringify), so `JSON.stringify(new Error('message'))` returns `'{}'`.
 
-Winston has special handling when an `Error` is the first or second argument to a log call:
+Winston lifts `message`, `stack` and `cause` onto the record when an `Error` is the **second** argument to a log call:
 
 ```ts
-logger.log(new Error('cause')) // { message: 'cause', stack: ... }
 logger.log('message', new Error('cause')) // { message: 'message cause', stack: ... }
 ```
 
-But when errors are nested inside structured log data, `message` and `stack` are lost:
+It does nothing of the kind for the other two shapes.
+
+An `Error` passed **alone** becomes the record itself, and since `message`, `stack` and `name` are not own enumerable properties, any transport that spreads or enumerates it receives none of them:
+
+```ts
+logger.log(new Error('cause')) // { ...info } is { level: 'info' } — no message, no stack
+```
+
+An `Error` **nested** in structured log data loses `message` and `stack` for the same reason:
 
 ```ts
 try {
@@ -312,14 +319,16 @@ try {
 }
 ```
 
-`createLogger` solves this with two complementary mechanisms:
+`createLogger` solves both with two complementary mechanisms:
 
-- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport.
+- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth, the record itself included) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport. When the record is the error, `level` and winston's routing symbols are re-applied to the serialized object so routing still works.
 - `serializableErrorReplacer` is passed to the Console transport's final `format.json()` as a safety net — [logform](https://github.com/winstonjs/logform) uses [safe-stable-stringify](https://www.npmjs.com/package/safe-stable-stringify), which accepts a replacer, so any `Error` that slips through is still serialised correctly.
 
 ```ts
 format.json({ replacer: serializableErrorReplacer })
 ```
+
+> **Upgrading from 2.0.** A record that is itself an `Error` now reaches transports as a plain object rather than an `Error` instance, so that it carries `name`, `message` and `stack` as ordinary properties. A custom transport that tested `info instanceof Error` should read those properties instead.
 
 To plug in a custom transformation (for example, an `Error`-normalising function previously applied via a custom winston-transport), pass it via `errorSerializer` — it's threaded into both mechanisms:
 
