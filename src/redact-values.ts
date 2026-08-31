@@ -10,7 +10,9 @@ import { type ErrorSerializer, serializeError } from './serialize-error'
 // after it. Substitute the plain object the serializer builds, which holds the same facts and
 // clones without complaint.
 const plainDomException = (error: DOMException, serializer: ErrorSerializer): Record<string | symbol, unknown> => {
-  const plain = serializer(error) as Record<string | symbol, unknown>
+  // Copied, never mutated in place: a serializer is free to return a frozen record, or a cached one
+  // shared between calls, and stamping symbols onto either would throw or leak.
+  const plain = { ...serializer(error) } as Record<string | symbol, unknown>
   // A serializer walks string keys only. Carry own symbols across so a `DOMException` given to the
   // logger as the whole record keeps winston's `LEVEL` and `SPLAT` routing symbols.
   for (const symbol of Object.getOwnPropertySymbols(error)) {

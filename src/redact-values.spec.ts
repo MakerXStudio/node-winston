@@ -45,4 +45,16 @@ describe('redactValues', () => {
 
     expect(result.error).toEqual({ kind: 'TimeoutError', detail: 'the operation timed out' })
   })
+  it('does not mutate the record a custom serializer returns', () => {
+    const record = Object.assign(new DOMException('the operation timed out', 'TimeoutError'), {
+      [LEVEL]: 'error',
+      level: 'error',
+    })
+    const redact = redactValuesWith('<redacted>', (error) => Object.freeze({ kind: error.name }))
+
+    const result = redact(record, 'authorization') as Record<string | symbol, unknown>
+
+    expect(result).toMatchObject({ kind: 'TimeoutError' })
+    expect(result[LEVEL]).toBe('error')
+  })
 })

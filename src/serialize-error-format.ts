@@ -25,31 +25,43 @@ const isPlainObject = (value: object) => {
  * enumerable keys, and `%j` would render `{}` in place of its value. So this recurses through
  * arrays and plain objects only, and rebuilds one only when it really holds an error. Anything
  * untouched comes back as the same reference.
+ *
+ * `rebuilt` maps each source container to its replacement, so a back-edge resolves to the
+ * replacement rather than to the unprocessed source — otherwise a rebuilt branch would link back to
+ * the original and leave a live error reachable through the cycle. A container reached twice
+ * without a cycle resolves to the same replacement both times, which keeps shared references
+ * shared.
  */
-const replaceErrors = (value: unknown, serializer: ErrorSerializer, seen: WeakSet<object>): unknown => {
+const replaceErrors = (value: unknown, serializer: ErrorSerializer, rebuilt: Map<object, unknown>): unknown => {
   if (value instanceof Error) return serializer(value)
   if (!value || typeof value !== 'object') return value
-  // A cycle is left as it is: the record is winston's, and this walk replaces rather than copies.
-  if (seen.has(value)) return value
+  if (rebuilt.has(value)) return rebuilt.get(value)
   if (!Array.isArray(value) && !isPlainObject(value)) return value
 
-  seen.add(value)
-  try {
-    if (Array.isArray(value)) {
-      const out = value.map((entry) => replaceErrors(entry, serializer, seen))
-      return out.some((entry, index) => entry !== value[index]) ? out : value
-    }
-    const source = value as Record<string, unknown>
-    const out: Record<string, unknown> = {}
+  if (Array.isArray(value)) {
+    const out: unknown[] = []
+    rebuilt.set(value, out)
     let replaced = false
-    for (const key of Object.keys(source)) {
-      out[key] = replaceErrors(source[key], serializer, seen)
-      if (out[key] !== source[key]) replaced = true
+    for (let index = 0; index < value.length; index++) {
+      out[index] = replaceErrors(value[index], serializer, rebuilt)
+      if (out[index] !== value[index]) replaced = true
     }
+    // `replaced` is true whenever a back-edge was taken, because the replacement it resolved to is
+    // not the source. So an unreplaced container never has one pointing at its discarded copy.
+    if (!replaced) rebuilt.set(value, value)
     return replaced ? out : value
-  } finally {
-    seen.delete(value)
   }
+
+  const source = value as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  rebuilt.set(value, out)
+  let replaced = false
+  for (const key of Object.keys(source)) {
+    out[key] = replaceErrors(source[key], serializer, rebuilt)
+    if (out[key] !== source[key]) replaced = true
+  }
+  if (!replaced) rebuilt.set(value, value)
+  return replaced ? out : value
 }
 
 /**
@@ -67,7 +79,9 @@ const replaceErrors = (value: unknown, serializer: ErrorSerializer, seen: WeakSe
  * error.
  */
 const serializeRecord = (error: Error, serializer: ErrorSerializer): Record<string | symbol, unknown> => {
-  const record = serializer(error) as Record<string | symbol, unknown>
+  // Copied, never mutated in place: a serializer is free to return a frozen record, or a cached one
+  // shared between calls, and stamping routing onto either would throw or leak.
+  const record = { ...serializer(error) } as Record<string | symbol, unknown>
   // Guarded because `serializeErrorFormat` is also usable outside `createLogger`, on a record
   // winston has not stamped a level onto.
   if ('level' in error) record.level = (error as unknown as { level: unknown }).level
@@ -114,6 +128,6 @@ export const serializeErrorFormat = format((info, opts) => {
   const seen = new WeakSet<object>([record])
   for (const key of Object.keys(record)) record[key] = walk(record[key], seen)
   const splat = record[SPLAT]
-  if (Array.isArray(splat)) record[SPLAT] = replaceErrors(splat, serializer, new WeakSet<object>())
+  if (Array.isArray(splat)) record[SPLAT] = replaceErrors(splat, serializer, new Map<object, unknown>())
   return record as unknown as TransformableInfo
 })

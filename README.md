@@ -306,7 +306,7 @@ It does nothing of the kind for the other two shapes.
 An `Error` passed **alone** becomes the record itself, and since `message`, `stack` and `name` are not own enumerable properties, any transport that spreads or enumerates it receives none of them:
 
 ```ts
-logger.log(new Error('cause')) // { ...info } is { level: 'info' } — no message, no stack
+logger.error(new Error('cause')) // { ...info } was { level: 'error' } — no message, no stack
 ```
 
 An `Error` **nested** in structured log data loses `message` and `stack` for the same reason:

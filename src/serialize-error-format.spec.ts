@@ -149,4 +149,37 @@ describe('serializeErrorFormat', () => {
     const result = run({ message: 'not an error', stack: 'a string' })
     expect(result).toMatchObject({ message: 'not an error', stack: 'a string' })
   })
+  it('rebuilds a cyclic splat branch so no live error is reachable through the cycle', () => {
+    const branch: Record<string, unknown> = { error: new Error('boom') }
+    branch.self = branch
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [branch] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, Record<string, never>[]>
+    const walked = result[SPLAT][0] as unknown as { error: unknown; self: { error: unknown } }
+
+    expect(walked.error).not.toBeInstanceOf(Error)
+    expect(walked.self).toBe(walked)
+    expect(walked.self.error).not.toBeInstanceOf(Error)
+  })
+
+  it('keeps a shared splat reference shared', () => {
+    const shared = { error: new Error('boom') }
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [{ a: shared, b: shared }] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, { a: unknown; b: unknown }[]>
+
+    expect(result[SPLAT][0].a).toBe(result[SPLAT][0].b)
+  })
+
+  it('does not mutate the record a custom serializer returns', () => {
+    const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
+    const fmt = serializeErrorFormat({ serializer: (e: Error) => Object.freeze({ kind: e.name }) })
+
+    const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
+
+    expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
+    expect(result[LEVEL]).toBe('error')
+  })
 })
