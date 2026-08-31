@@ -1,4 +1,26 @@
-import { cloneDeep, forOwn, get, isNil, isObject, set } from 'es-toolkit/compat'
+import { cloneDeepWith, forOwn, get, isNil, isObject, set } from 'es-toolkit/compat'
+import { serializeError } from './serialize-error'
+
+// A `DOMException` — what `AbortSignal.timeout()` rejects with — cannot survive a deep clone.
+// es-toolkit clones an `Error` with `structuredClone` and then re-assigns `message` and `name`, but
+// `structuredClone` rebuilds a `DOMException` as a `DOMException`, whose `message` and `name` are
+// getter-only prototype accessors, so the assignment throws a `TypeError`. Thrown from inside a
+// format, that `TypeError` comes out of the `logger.error(...)` call itself: the caller loses the
+// log line and everything it meant to do after it. Substitute the plain, already-cycle-safe object
+// `serializeError` builds, which holds the same facts and clones without complaint.
+const plainDomException = (error: DOMException): Record<string | symbol, unknown> => {
+  const plain = serializeError(error) as Record<string | symbol, unknown>
+  // `serializeError` walks string keys only. Carry own symbols across so a `DOMException` given to
+  // the logger as the whole record keeps winston's `LEVEL` and `SPLAT` routing symbols.
+  for (const symbol of Object.getOwnPropertySymbols(error)) {
+    plain[symbol] = (error as unknown as Record<symbol, unknown>)[symbol]
+  }
+  return plain
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const cloneForRedaction = (obj: any) =>
+  cloneDeepWith(obj, (value) => (value instanceof DOMException ? plainDomException(value) : undefined))
 
 // Expands a single path against the current node, supporting `[*]` to iterate every element of an
 // array segment. Without `[*]` it falls back to lodash-style get/set on a dot path.
@@ -45,7 +67,7 @@ export const redactValuesWith =
         if (isObject(value)) redact(value)
       })
       return current
-    })(cloneDeep(obj))
+    })(cloneForRedaction(obj))
   }
 
 export const redactValues = redactValuesWith('<redacted>')

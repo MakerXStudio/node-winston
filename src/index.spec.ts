@@ -383,6 +383,63 @@ describe('createLogger mapAuditLevelForOtel', () => {
   })
 })
 
+describe('createLogger DOMException', () => {
+  // `AbortSignal.timeout()` rejects with a `DOMException`, whose `message` and `name` are
+  // getter-only prototype accessors. A deep clone cannot rebuild one, so redaction used to throw a
+  // TypeError out of the log call itself, costing the caller the log line and everything after it.
+  const aborted = () => new DOMException('the operation timed out', 'TimeoutError')
+
+  it('logs one held in metadata, at any depth', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+    })
+
+    logger.error('flat', { error: aborted() })
+    logger.error('nested', { context: { error: aborted() } })
+    logger.error('in an array', { errors: [aborted()] })
+
+    expect(transport.logs.length).toBe(3)
+    expect(transport.logs[0].error).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+    expect(transport.logs[0].error.stack).toBeDefined()
+    expect(transport.logs[1].context.error).toMatchObject({ name: 'TimeoutError' })
+    expect(transport.logs[2].errors[0]).toMatchObject({ name: 'TimeoutError' })
+  })
+
+  it('logs one passed as the whole record', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+    })
+
+    logger.error(aborted() as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+  })
+
+  it('logs one with every logger-level format enabled', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      omitPaths: ['service'],
+      redactPaths: ['authorization'],
+      mapAuditLevelForOtel: true,
+      flatten: true,
+    })
+
+    logger.error('everything on', { service: 'svc', authorization: 'Bearer abc', error: aborted() })
+
+    expect(transport.logs[0].service).toBeUndefined()
+    expect(transport.logs[0].authorization).toBe('<redacted>')
+    expect(transport.logs[0].error).toContain('TimeoutError')
+  })
+})
+
 class InMemoryTransport extends TransportStream {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   logs: Record<string, any>[]

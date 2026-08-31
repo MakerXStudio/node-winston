@@ -1,5 +1,5 @@
 import { TransformableInfo } from 'logform'
-import { LEVEL } from 'triple-beam'
+import { LEVEL, SPLAT } from 'triple-beam'
 import { describe, expect, it } from 'vitest'
 import { serializeErrorFormat, SerializeErrorFormatOptions } from './serialize-error-format'
 
@@ -72,5 +72,25 @@ describe('serializeErrorFormat', () => {
     const result = run({ a: shared, b: shared })
     expect(result.a).toEqual({ value: 42 })
     expect(result.b).toEqual({ value: 42 })
+  })
+
+  it('serialises errors held under the SPLAT symbol', () => {
+    const error = new Error('boom')
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [{ error }] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, { error: { message: string } }[]>
+
+    expect(result[SPLAT][0].error).not.toBeInstanceOf(Error)
+    expect(result[SPLAT][0].error.message).toBe('boom')
+  })
+
+  it('leaves a SPLAT holding no errors alone', () => {
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: ['a', 1] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+
+    expect(result[SPLAT]).toEqual(['a', 1])
   })
 })

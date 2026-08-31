@@ -331,6 +331,20 @@ const logger = createLogger({
 })
 ```
 
+#### `DOMException`
+
+`AbortSignal.timeout()` and `AbortSignal.abort()` reject with a `DOMException`, so it is what a `catch` block receives whenever a fetch, a stream or a job is abandoned on a deadline. It needs no special treatment: log it like any other error.
+
+```ts
+try {
+  await fetch(url, { signal: AbortSignal.timeout(5_000) })
+} catch (error) {
+  logger.error('delivery failed', { error }) // { error: { name: 'TimeoutError', message: ..., stack: ... } }
+}
+```
+
+A `DOMException` keeps `message` and `name` as getter-only accessors on its prototype, which makes it the one error type a deep clone cannot rebuild. The library substitutes a plain object before it clones the log record, so `redactPaths` handles a `DOMException` like any other value.
+
 For direct format usage, `serializeErrorFormat` accepts the same override and `createSerializableErrorReplacer(serializer)` builds a matching JSON replacer:
 
 ```ts

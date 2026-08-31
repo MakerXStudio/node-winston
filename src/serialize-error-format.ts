@@ -1,4 +1,5 @@
 import { TransformableInfo } from 'logform'
+import { SPLAT } from 'triple-beam'
 import { format } from 'winston'
 import { ErrorSerializer, serializeError } from './serialize-error'
 
@@ -18,6 +19,11 @@ export interface SerializeErrorFormatOptions {
  * Only the top-level `info` object is mutated (to preserve winston's Symbol-keyed
  * routing props); nested objects and arrays are rebuilt, so caller-supplied metadata
  * references are never mutated.
+ *
+ * The `SPLAT` symbol is walked as well. Winston keeps the raw metadata argument there in addition
+ * to merging its properties onto `info`, so an `Error` logged as `logger.error(msg, { error })` is
+ * reachable twice. Serializing only the string keys leaves the live `Error` under `SPLAT` for every
+ * later format to trip over.
  */
 export const serializeErrorFormat = format((info, opts) => {
   const serializer = (opts as SerializeErrorFormatOptions | undefined)?.serializer ?? serializeError
@@ -36,8 +42,10 @@ export const serializeErrorFormat = format((info, opts) => {
       seen.delete(value)
     }
   }
-  const record = info as unknown as Record<string, unknown>
+  const record = info as unknown as Record<string | symbol, unknown>
   const seen = new WeakSet<object>([record])
   for (const key of Object.keys(record)) record[key] = walk(record[key], seen)
+  const splat = record[SPLAT]
+  if (Array.isArray(splat)) record[SPLAT] = splat.map((value) => walk(value, seen))
   return info as TransformableInfo
 })
