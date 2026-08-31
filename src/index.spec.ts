@@ -408,6 +408,23 @@ describe('createLogger DOMException', () => {
     expect(transport.logs[2].errors[0]).toMatchObject({ name: 'TimeoutError' })
   })
 
+  // A separate winston code path: with a message and a non-plain second argument it lifts
+  // `message`, `stack` and `cause` onto a fresh info object and keeps the raw error under `SPLAT`,
+  // which is where the clone used to find it.
+  it('logs one passed as the second argument', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+    })
+
+    logger.error('delivery failed', aborted() as unknown as string)
+
+    expect(transport.logs[0].message).toBe('delivery failed the operation timed out')
+    expect(transport.logs[0].stack).toContain('TimeoutError')
+  })
+
   it('logs one passed as the whole record', () => {
     const transport = new InMemoryTransport({})
     const logger = createLogger({
