@@ -214,4 +214,48 @@ describe('serializeErrorFormat', () => {
     expect(result[SPLAT][0]).toBe(untouched)
     expect(result[SPLAT][1].error).toMatchObject({ message: 'boom' })
   })
+  it('keeps the symbols and non-enumerable properties of a rebuilt splat argument', () => {
+    const marker = Symbol('marker')
+    const argument: Record<string | symbol, unknown> = { error: new Error('boom'), [marker]: 'kept' }
+    Object.defineProperty(argument, 'hidden', { value: 'kept', enumerable: false })
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [argument] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+    const walked = result[SPLAT][0] as Record<string | symbol, unknown>
+
+    expect(walked).not.toBe(argument)
+    expect(walked.error).not.toBeInstanceOf(Error)
+    expect(walked[marker]).toBe('kept')
+    expect(walked.hidden).toBe('kept')
+    expect(Object.getOwnPropertyDescriptor(walked, 'hidden')?.enumerable).toBe(false)
+  })
+
+  it('keeps the prototype of a rebuilt null-prototype splat argument', () => {
+    const argument = Object.assign(Object.create(null), { error: new Error('boom') }) as object
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [argument] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+
+    expect(Object.getPrototypeOf(result[SPLAT][0])).toBeNull()
+  })
+
+  it('keeps the extra properties of a rebuilt splat array', () => {
+    const marker = Symbol('marker')
+    const argument = [new Error('boom')] as unknown[] & Record<string | symbol, unknown>
+    argument.extra = 'kept'
+    argument[marker] = 'kept'
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [argument] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+    const walked = result[SPLAT][0] as unknown[] & Record<string | symbol, unknown>
+
+    expect(Array.isArray(walked)).toBe(true)
+    expect(walked.length).toBe(1)
+    expect(walked[0]).not.toBeInstanceOf(Error)
+    expect(walked.extra).toBe('kept')
+    expect(walked[marker]).toBe('kept')
+  })
 })

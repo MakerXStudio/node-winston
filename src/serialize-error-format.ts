@@ -24,7 +24,8 @@ const isPlainObject = (value: object) => {
  * a `Date` or a `Map` has to arrive as itself — rebuilt as a plain record it holds no own
  * enumerable keys, and `%j` would render `{}` in place of its value. So this recurses through
  * arrays and plain objects only, and rebuilds one only when it really holds an error. Anything
- * untouched comes back as the same reference.
+ * untouched comes back as the same reference, and a container that must be rebuilt keeps its
+ * prototype and every own key the rebuild did not replace.
  *
  * `rebuilt` maps each source container to its replacement, so a back-edge resolves to the
  * replacement rather than to the unprocessed source — otherwise a rebuilt branch would link back to
@@ -57,11 +58,27 @@ const holdsError = (value: unknown, seen: Map<object, boolean>): boolean => {
   return found
 }
 
+/**
+ * Carries across every own key the rebuild did not visit — symbols, non-enumerable properties, an
+ * array's non-index properties — so a container rebuilt to replace an error inside it keeps
+ * everything the replacement did not touch. `length` is skipped: an array manages its own.
+ */
+const carryOverUnvisited = <T extends object>(out: T, source: object, visited: Set<PropertyKey>): T => {
+  for (const key of Reflect.ownKeys(source)) {
+    if (visited.has(key)) continue
+    if (Array.isArray(source) && key === 'length') continue
+    Object.defineProperty(out, key, Object.getOwnPropertyDescriptor(source, key) as PropertyDescriptor)
+  }
+  return out
+}
+
 const replaceErrors = (value: unknown, serializer: ErrorSerializer, rebuilt: Map<object, unknown>): unknown => {
   if (value instanceof Error) return serializer(value)
   if (!value || typeof value !== 'object') return value
   if (rebuilt.has(value)) return rebuilt.get(value)
   if (!Array.isArray(value) && !isPlainObject(value)) return value
+
+  const visited = new Set<PropertyKey>()
 
   if (Array.isArray(value)) {
     const out: unknown[] = []
@@ -69,24 +86,27 @@ const replaceErrors = (value: unknown, serializer: ErrorSerializer, rebuilt: Map
     let replaced = false
     for (let index = 0; index < value.length; index++) {
       out[index] = replaceErrors(value[index], serializer, rebuilt)
+      visited.add(String(index))
       if (out[index] !== value[index]) replaced = true
     }
     // `replaced` is true whenever a back-edge was taken, because the replacement it resolved to is
     // not the source. So an unreplaced container never has one pointing at its discarded copy.
     if (!replaced) rebuilt.set(value, value)
-    return replaced ? out : value
+    return replaced ? carryOverUnvisited(out, value, visited) : value
   }
 
   const source = value as Record<string, unknown>
-  const out: Record<string, unknown> = {}
+  // Built on the source's own prototype, so a null-prototype argument stays one.
+  const out = Object.create(Object.getPrototypeOf(value) as object | null) as Record<string, unknown>
   rebuilt.set(value, out)
   let replaced = false
   for (const key of Object.keys(source)) {
     out[key] = replaceErrors(source[key], serializer, rebuilt)
+    visited.add(key)
     if (out[key] !== source[key]) replaced = true
   }
   if (!replaced) rebuilt.set(value, value)
-  return replaced ? out : value
+  return replaced ? carryOverUnvisited(out, value, visited) : value
 }
 
 /**
