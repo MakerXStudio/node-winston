@@ -182,4 +182,36 @@ describe('serializeErrorFormat', () => {
     expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
     expect(result[LEVEL]).toBe('error')
   })
+  it('leaves a cyclic splat argument holding no error completely alone', () => {
+    const marker = Symbol('marker')
+    const cyclic: Record<string | symbol, unknown> = { n: 1, [marker]: 'kept' }
+    cyclic.self = cyclic
+    Object.defineProperty(cyclic, 'hidden', { value: 'kept', enumerable: false })
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [cyclic] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+    const walked = result[SPLAT][0] as Record<string | symbol, unknown>
+
+    expect(walked).toBe(cyclic)
+    expect(walked[marker]).toBe('kept')
+    expect(walked.hidden).toBe('kept')
+  })
+
+  it('replaces only the argument that holds an error', () => {
+    const untouched: Record<string, unknown> = { n: 1 }
+    untouched.self = untouched
+    const input = {
+      [LEVEL]: 'info',
+      level: 'info',
+      message: '',
+      [SPLAT]: [untouched, { error: new Error('boom') }],
+    } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, Record<string, unknown>[]>
+
+    expect(result[SPLAT][0]).toBe(untouched)
+    expect(result[SPLAT][1].error).toMatchObject({ message: 'boom' })
+  })
 })

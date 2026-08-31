@@ -57,4 +57,35 @@ describe('redactValues', () => {
     expect(result).toMatchObject({ kind: 'TimeoutError' })
     expect(result[LEVEL]).toBe('error')
   })
+  it('does not write into the nested values a serializer returns', () => {
+    const cached = { context: { authorization: 'secret' } }
+    const redact = redactValuesWith('<redacted>', () => cached)
+
+    const result = redact({ error: new DOMException('t', 'TimeoutError') }, 'authorization') as {
+      error: { context: { authorization: string } }
+    }
+
+    expect(result.error.context.authorization).toBe('<redacted>')
+    expect(cached.context.authorization).toBe('secret')
+  })
+
+  it('substitutes a serializer that returns the error it was given', () => {
+    const aborted = new DOMException('the operation timed out', 'TimeoutError')
+    const redact = redactValuesWith('<redacted>', (error) => ({ kind: error.name, original: error }))
+
+    const result = redact({ error: aborted }, 'authorization') as { error: Record<string, unknown> }
+
+    expect(result.error.kind).toBe('TimeoutError')
+    expect(result.error.original).toBe(result.error)
+  })
+  it('redacts a cyclic record instead of overflowing the stack', () => {
+    const cyclic: Record<string, unknown> = { authorization: 'secret' }
+    cyclic.self = cyclic
+
+    const result = redactValues({ a: cyclic }, 'authorization') as { a: Record<string, unknown> }
+
+    expect(result.a.authorization).toBe('<redacted>')
+    expect(result.a.self).toBe(result.a)
+    expect(cyclic.authorization).toBe('secret')
+  })
 })

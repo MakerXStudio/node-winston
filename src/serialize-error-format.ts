@@ -32,6 +32,31 @@ const isPlainObject = (value: object) => {
  * without a cycle resolves to the same replacement both times, which keeps shared references
  * shared.
  */
+/**
+ * Whether an error is reachable from a splat argument, so {@link replaceErrors} runs only where it
+ * has something to do.
+ *
+ * A container is marked `false` while it is being examined, which cuts cycles: going back round one
+ * reaches nothing the walk is not already looking at. That makes an in-progress entry pessimistic
+ * for a sibling asked later, so this is only ever asked about a whole argument — the node holding
+ * the error always finishes examining its own keys, and the answer for the argument is right.
+ */
+const holdsError = (value: unknown, seen: Map<object, boolean>): boolean => {
+  if (value instanceof Error) return true
+  if (!value || typeof value !== 'object') return false
+  const known = seen.get(value)
+  if (known !== undefined) return known
+  if (!Array.isArray(value) && !isPlainObject(value)) return false
+
+  seen.set(value, false)
+  const source = value as Record<string, unknown>
+  const found = Array.isArray(value)
+    ? value.some((entry) => holdsError(entry, seen))
+    : Object.keys(source).some((key) => holdsError(source[key], seen))
+  seen.set(value, found)
+  return found
+}
+
 const replaceErrors = (value: unknown, serializer: ErrorSerializer, rebuilt: Map<object, unknown>): unknown => {
   if (value instanceof Error) return serializer(value)
   if (!value || typeof value !== 'object') return value
@@ -128,6 +153,13 @@ export const serializeErrorFormat = format((info, opts) => {
   const seen = new WeakSet<object>([record])
   for (const key of Object.keys(record)) record[key] = walk(record[key], seen)
   const splat = record[SPLAT]
-  if (Array.isArray(splat)) record[SPLAT] = replaceErrors(splat, serializer, new Map<object, unknown>())
+  if (Array.isArray(splat)) {
+    // Gated per argument. A cyclic container always takes a back-edge to its replacement, which
+    // counts as a change, so without this an argument holding no error at all would be rebuilt —
+    // losing its identity and any symbol or non-enumerable property with it.
+    const rebuilt = new Map<object, unknown>()
+    const next = splat.map((value) => (holdsError(value, new Map<object, boolean>()) ? replaceErrors(value, serializer, rebuilt) : value))
+    if (next.some((value, index) => value !== splat[index])) record[SPLAT] = next
+  }
   return record as unknown as TransformableInfo
 })
