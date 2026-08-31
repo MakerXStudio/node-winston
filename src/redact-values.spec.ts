@@ -1,6 +1,6 @@
 import { LEVEL } from 'triple-beam'
 import { describe, expect, it } from 'vitest'
-import { redactValues } from './redact-values'
+import { redactValues, redactValuesWith } from './redact-values'
 
 describe('redactValues', () => {
   it('clones a DOMException instead of failing on its getter-only properties', () => {
@@ -36,5 +36,13 @@ describe('redactValues', () => {
 
     expect(result).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out', level: 'error' })
     expect(result[LEVEL]).toBe('error')
+  })
+  it('substitutes a DOMException with the supplied serializer', () => {
+    const aborted = new DOMException('the operation timed out', 'TimeoutError')
+    const redact = redactValuesWith('<redacted>', (error) => ({ kind: error.name, detail: error.message }))
+
+    const result = redact({ error: aborted }, 'authorization') as { error: Record<string, unknown> }
+
+    expect(result.error).toEqual({ kind: 'TimeoutError', detail: 'the operation timed out' })
   })
 })

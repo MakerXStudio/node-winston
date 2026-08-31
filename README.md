@@ -333,7 +333,7 @@ const logger = createLogger({
 
 #### `DOMException`
 
-`AbortSignal.timeout()` and `AbortSignal.abort()` reject with a `DOMException`, so it is what a `catch` block receives whenever a fetch, a stream or a job is abandoned on a deadline. It needs no special treatment: log it like any other error.
+An `AbortSignal` carries a `DOMException` as its `reason`, and an operation cancelled through one rejects with that reason. A `DOMException` is therefore what a `catch` block receives whenever a fetch, a stream or a job is abandoned on a deadline. It needs no special treatment: log it like any other error.
 
 ```ts
 try {
@@ -343,7 +343,7 @@ try {
 }
 ```
 
-A `DOMException` keeps `message` and `name` as getter-only accessors on its prototype, which makes it the one error type a deep clone cannot rebuild. The library substitutes a plain object before it clones the log record, so `redactPaths` handles a `DOMException` like any other value.
+A `DOMException` keeps `message` and `name` as getter-only accessors on its prototype, which makes it the one error type a deep clone cannot rebuild. The library substitutes a serialized object before it clones the log record, using the configured `errorSerializer`, so `redactPaths` handles a `DOMException` like any other value.
 
 For direct format usage, `serializeErrorFormat` accepts the same override and `createSerializableErrorReplacer(serializer)` builds a matching JSON replacer:
 

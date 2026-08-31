@@ -438,6 +438,22 @@ describe('createLogger DOMException', () => {
     expect(transport.logs[0].authorization).toBe('<redacted>')
     expect(transport.logs[0].error).toContain('TimeoutError')
   })
+
+  it('serialises one with a configured errorSerializer, wherever it sits in the record', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+      errorSerializer: (error) => ({ kind: error.name, detail: error.message }),
+    })
+
+    logger.error('nested', { error: aborted() })
+    logger.error(aborted() as unknown as string)
+
+    expect(transport.logs[0].error).toEqual({ kind: 'TimeoutError', detail: 'the operation timed out' })
+    expect(transport.logs[1]).toMatchObject({ kind: 'TimeoutError', detail: 'the operation timed out' })
+  })
 })
 
 class InMemoryTransport extends TransportStream {

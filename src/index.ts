@@ -270,7 +270,7 @@ export function createLogger(options: CreateLoggerOptions): any {
   const loggerFormats: Format[] = [serializeErrorFormat({ serializer: errorSerializer })]
   if (mapAuditForOtel) loggerFormats.push(mapAuditLevelForOtel())
   if (omitPaths) loggerFormats.push(omitFormat({ paths: omitPaths }))
-  if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue }))
+  if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue, errorSerializer }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)
   // flatten is applied last so all prior transformations are captured in the stringified values
   if (flatten) loggerFormats.push(jsonStringifyValuesFormat({ replacer: flattenReplacer }))

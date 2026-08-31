@@ -93,4 +93,34 @@ describe('serializeErrorFormat', () => {
 
     expect(result[SPLAT]).toEqual(['a', 1])
   })
+  it('leaves non-error splat arguments as they are, so format.splat() can interpolate them', () => {
+    const date = new Date('2020-01-02T03:04:05Z')
+    const nested = { when: date, n: 1 }
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [date, nested] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+
+    // Same references: rebuilt as plain records these hold no own enumerable keys, and `%j` would
+    // render `{}` in place of the date.
+    expect(result[SPLAT][0]).toBe(date)
+    expect(result[SPLAT][1]).toBe(nested)
+  })
+
+  it('rebuilds only the splat branch that holds an error', () => {
+    const untouched = { n: 1 }
+    const input = {
+      [LEVEL]: 'info',
+      level: 'info',
+      message: '',
+      [SPLAT]: [untouched, { error: new Error('boom'), when: new Date('2020-01-02T03:04:05Z') }],
+    } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, Record<string, unknown>[]>
+
+    expect(result[SPLAT][0]).toBe(untouched)
+    expect(result[SPLAT][1].error).toMatchObject({ message: 'boom' })
+    expect(result[SPLAT][1].when).toBeInstanceOf(Date)
+  })
 })
