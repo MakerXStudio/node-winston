@@ -384,7 +384,7 @@ describe('createLogger mapAuditLevelForOtel', () => {
 })
 
 describe('createLogger DOMException', () => {
-  // `AbortSignal.timeout()` rejects with a `DOMException`, whose `message` and `name` are
+  // An operation cancelled through an `AbortSignal` rejects with a `DOMException`, whose `message` and `name` are
   // getter-only prototype accessors. A deep clone cannot rebuild one, so redaction used to throw a
   // TypeError out of the log call itself, costing the caller the log line and everything after it.
   const aborted = () => new DOMException('the operation timed out', 'TimeoutError')

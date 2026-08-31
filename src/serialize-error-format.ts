@@ -11,21 +11,6 @@ export interface SerializeErrorFormatOptions {
   serializer?: ErrorSerializer
 }
 
-/**
- * Walks the log info object, replacing any `Error` instances (including nested ones)
- * with the plain-object result of the configured serializer so downstream formats and
- * transports see JSON-serializable errors with `message` and `stack` intact.
- *
- * Only the top-level `info` object is mutated (to preserve winston's Symbol-keyed
- * routing props); nested objects and arrays are rebuilt, so caller-supplied metadata
- * references are never mutated.
- *
- * Errors under the `SPLAT` symbol are replaced too. Winston keeps the raw metadata argument there
- * in addition to merging its properties onto `info`, so an `Error` logged as
- * `logger.error(msg, { error })` is reachable twice, and serializing only the string keys leaves
- * the live `Error` under `SPLAT` for every later format to trip over. `SPLAT` is treated more
- * gently than the rest of the record: see {@link replaceErrors}.
- */
 const isPlainObject = (value: object) => {
   const prototype = Object.getPrototypeOf(value) as unknown
   return prototype === Object.prototype || prototype === null
@@ -67,6 +52,21 @@ const replaceErrors = (value: unknown, serializer: ErrorSerializer, seen: WeakSe
   }
 }
 
+/**
+ * Walks the log info object, replacing any `Error` instances (including nested ones)
+ * with the plain-object result of the configured serializer so downstream formats and
+ * transports see JSON-serializable errors with `message` and `stack` intact.
+ *
+ * Only the top-level `info` object is mutated (to preserve winston's Symbol-keyed
+ * routing props); nested objects and arrays are rebuilt, so caller-supplied metadata
+ * references are never mutated.
+ *
+ * Errors under the `SPLAT` symbol are replaced too. Winston keeps the raw metadata argument there
+ * in addition to merging its properties onto `info`, so an `Error` logged as
+ * `logger.error(msg, { error })` is reachable twice, and serializing only the string keys leaves
+ * the live `Error` under `SPLAT` for every later format to trip over. `SPLAT` is treated more
+ * gently than the rest of the record: see {@link replaceErrors}.
+ */
 export const serializeErrorFormat = format((info, opts) => {
   const serializer = (opts as SerializeErrorFormatOptions | undefined)?.serializer ?? serializeError
   const walk = (value: unknown, seen: WeakSet<object>): unknown => {

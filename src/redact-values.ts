@@ -1,13 +1,14 @@
 import { cloneDeepWith, forOwn, get, isNil, isObject, set } from 'es-toolkit/compat'
 import { type ErrorSerializer, serializeError } from './serialize-error'
 
-// A `DOMException` — what `AbortSignal.timeout()` rejects with — cannot survive a deep clone.
-// es-toolkit clones an `Error` with `structuredClone` and then re-assigns `message` and `name`, but
-// `structuredClone` rebuilds a `DOMException` as a `DOMException`, whose `message` and `name` are
-// getter-only prototype accessors, so the assignment throws a `TypeError`. Thrown from inside a
-// format, that `TypeError` comes out of the `logger.error(...)` call itself: the caller loses the
-// log line and everything it meant to do after it. Substitute the plain, already-cycle-safe object
-// `serializeError` builds, which holds the same facts and clones without complaint.
+// A `DOMException` — the reason an `AbortSignal` carries, so what a cancelled operation rejects
+// with — cannot survive a deep clone. es-toolkit clones an `Error` with `structuredClone` and then
+// re-assigns `message` and `name`, but `structuredClone` rebuilds a `DOMException` as a
+// `DOMException`, whose `message` and `name` are getter-only prototype accessors, so the assignment
+// throws a `TypeError`. Thrown from inside a format, that `TypeError` comes out of the
+// `logger.error(...)` call itself: the caller loses the log line and everything it meant to do
+// after it. Substitute the plain object the serializer builds, which holds the same facts and
+// clones without complaint.
 const plainDomException = (error: DOMException, serializer: ErrorSerializer): Record<string | symbol, unknown> => {
   const plain = serializer(error) as Record<string | symbol, unknown>
   // A serializer walks string keys only. Carry own symbols across so a `DOMException` given to the
