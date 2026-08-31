@@ -1,5 +1,5 @@
 import { TransformableInfo } from 'logform'
-import { LEVEL } from 'triple-beam'
+import { LEVEL, SPLAT } from 'triple-beam'
 import { describe, expect, it } from 'vitest'
 import { serializeErrorFormat, SerializeErrorFormatOptions } from './serialize-error-format'
 
@@ -72,5 +72,190 @@ describe('serializeErrorFormat', () => {
     const result = run({ a: shared, b: shared })
     expect(result.a).toEqual({ value: 42 })
     expect(result.b).toEqual({ value: 42 })
+  })
+
+  it('serialises errors held under the SPLAT symbol', () => {
+    const error = new Error('boom')
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [{ error }] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, { error: { message: string } }[]>
+
+    expect(result[SPLAT][0].error).not.toBeInstanceOf(Error)
+    expect(result[SPLAT][0].error.message).toBe('boom')
+  })
+
+  it('leaves a SPLAT holding no errors alone', () => {
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: ['a', 1] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+
+    expect(result[SPLAT]).toEqual(['a', 1])
+  })
+  it('leaves non-error splat arguments as they are, so format.splat() can interpolate them', () => {
+    const date = new Date('2020-01-02T03:04:05Z')
+    const nested = { when: date, n: 1 }
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [date, nested] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+
+    // Same references: rebuilt as plain records these hold no own enumerable keys, and `%j` would
+    // render `{}` in place of the date.
+    expect(result[SPLAT][0]).toBe(date)
+    expect(result[SPLAT][1]).toBe(nested)
+  })
+
+  it('rebuilds only the splat branch that holds an error', () => {
+    const untouched = { n: 1 }
+    const input = {
+      [LEVEL]: 'info',
+      level: 'info',
+      message: '',
+      [SPLAT]: [untouched, { error: new Error('boom'), when: new Date('2020-01-02T03:04:05Z') }],
+    } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, Record<string, unknown>[]>
+
+    expect(result[SPLAT][0]).toBe(untouched)
+    expect(result[SPLAT][1].error).toMatchObject({ message: 'boom' })
+    expect(result[SPLAT][1].when).toBeInstanceOf(Date)
+  })
+  it('replaces a record that is itself an error, keeping level and the routing symbols', () => {
+    const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
+
+    expect(result).not.toBeInstanceOf(Error)
+    expect(result).toMatchObject({ name: 'TypeError', message: 'boom', level: 'error' })
+    expect(result.stack).toBeDefined()
+    expect(result[LEVEL]).toBe('error')
+  })
+
+  it('serialises a record that is itself an error with the configured serializer', () => {
+    const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
+    const fmt = serializeErrorFormat({ serializer: (e: Error) => ({ kind: e.name }) })
+
+    const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
+
+    expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
+    expect(result[LEVEL]).toBe('error')
+  })
+
+  it('leaves a plain info object that merely looks like a log record alone', () => {
+    const result = run({ message: 'not an error', stack: 'a string' })
+    expect(result).toMatchObject({ message: 'not an error', stack: 'a string' })
+  })
+  it('rebuilds a cyclic splat branch so no live error is reachable through the cycle', () => {
+    const branch: Record<string, unknown> = { error: new Error('boom') }
+    branch.self = branch
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [branch] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, Record<string, never>[]>
+    const walked = result[SPLAT][0] as unknown as { error: unknown; self: { error: unknown } }
+
+    expect(walked.error).not.toBeInstanceOf(Error)
+    expect(walked.self).toBe(walked)
+    expect(walked.self.error).not.toBeInstanceOf(Error)
+  })
+
+  it('keeps a shared splat reference shared', () => {
+    const shared = { error: new Error('boom') }
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [{ a: shared, b: shared }] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, { a: unknown; b: unknown }[]>
+
+    expect(result[SPLAT][0].a).toBe(result[SPLAT][0].b)
+  })
+
+  it('does not mutate the record a custom serializer returns', () => {
+    const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
+    const fmt = serializeErrorFormat({ serializer: (e: Error) => Object.freeze({ kind: e.name }) })
+
+    const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
+
+    expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
+    expect(result[LEVEL]).toBe('error')
+  })
+  it('leaves a cyclic splat argument holding no error completely alone', () => {
+    const marker = Symbol('marker')
+    const cyclic: Record<string | symbol, unknown> = { n: 1, [marker]: 'kept' }
+    cyclic.self = cyclic
+    Object.defineProperty(cyclic, 'hidden', { value: 'kept', enumerable: false })
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [cyclic] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+    const walked = result[SPLAT][0] as Record<string | symbol, unknown>
+
+    expect(walked).toBe(cyclic)
+    expect(walked[marker]).toBe('kept')
+    expect(walked.hidden).toBe('kept')
+  })
+
+  it('replaces only the argument that holds an error', () => {
+    const untouched: Record<string, unknown> = { n: 1 }
+    untouched.self = untouched
+    const input = {
+      [LEVEL]: 'info',
+      level: 'info',
+      message: '',
+      [SPLAT]: [untouched, { error: new Error('boom') }],
+    } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, Record<string, unknown>[]>
+
+    expect(result[SPLAT][0]).toBe(untouched)
+    expect(result[SPLAT][1].error).toMatchObject({ message: 'boom' })
+  })
+  it('keeps the symbols and non-enumerable properties of a rebuilt splat argument', () => {
+    const marker = Symbol('marker')
+    const argument: Record<string | symbol, unknown> = { error: new Error('boom'), [marker]: 'kept' }
+    Object.defineProperty(argument, 'hidden', { value: 'kept', enumerable: false })
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [argument] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+    const walked = result[SPLAT][0] as Record<string | symbol, unknown>
+
+    expect(walked).not.toBe(argument)
+    expect(walked.error).not.toBeInstanceOf(Error)
+    expect(walked[marker]).toBe('kept')
+    expect(walked.hidden).toBe('kept')
+    expect(Object.getOwnPropertyDescriptor(walked, 'hidden')?.enumerable).toBe(false)
+  })
+
+  it('keeps the prototype of a rebuilt null-prototype splat argument', () => {
+    const argument = Object.assign(Object.create(null), { error: new Error('boom') }) as object
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [argument] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+
+    expect(Object.getPrototypeOf(result[SPLAT][0])).toBeNull()
+  })
+
+  it('keeps the extra properties of a rebuilt splat array', () => {
+    const marker = Symbol('marker')
+    const argument = [new Error('boom')] as unknown[] & Record<string | symbol, unknown>
+    argument.extra = 'kept'
+    argument[marker] = 'kept'
+    const input = { [LEVEL]: 'info', level: 'info', message: '', [SPLAT]: [argument] } as TransformableInfo
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(input, fmt.options) as unknown as Record<symbol, unknown[]>
+    const walked = result[SPLAT][0] as unknown[] & Record<string | symbol, unknown>
+
+    expect(Array.isArray(walked)).toBe(true)
+    expect(walked.length).toBe(1)
+    expect(walked[0]).not.toBeInstanceOf(Error)
+    expect(walked.extra).toBe('kept')
+    expect(walked[marker]).toBe('kept')
   })
 })

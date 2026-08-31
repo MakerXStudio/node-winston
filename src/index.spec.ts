@@ -383,6 +383,139 @@ describe('createLogger mapAuditLevelForOtel', () => {
   })
 })
 
+describe('createLogger error as the whole record', () => {
+  // `logger.error(err)` makes the error the record. `message`, `stack` and `name` are not own
+  // enumerable properties, so a transport that spreads or enumerates it used to receive neither
+  // a message nor a stack.
+  it('gives a transport the message, name and stack', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error(Object.assign(new TypeError('boom'), { code: 'E_BOOM' }) as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({
+      name: 'TypeError',
+      message: 'boom',
+      code: 'E_BOOM',
+      level: 'error',
+    })
+    expect(transport.logs[0].stack).toContain('TypeError: boom')
+  })
+
+  it('still routes at the right level', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      loggerOptions: { level: 'warn' },
+    })
+
+    logger.error(new TypeError('kept') as unknown as string)
+    logger.info(new TypeError('filtered out') as unknown as string)
+
+    expect(transport.logs.map((l) => l.message)).toEqual(['kept'])
+  })
+
+  it('leaves a plain info object alone', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.log({ level: 'info', message: 'plain', stack: 'a string' })
+
+    expect(transport.logs[0]).toMatchObject({ message: 'plain', stack: 'a string' })
+  })
+})
+
+describe('createLogger DOMException', () => {
+  // An operation cancelled through an `AbortSignal` rejects with a `DOMException`, whose `message` and `name` are
+  // getter-only prototype accessors. A deep clone cannot rebuild one, so redaction used to throw a
+  // TypeError out of the log call itself, costing the caller the log line and everything after it.
+  const aborted = () => new DOMException('the operation timed out', 'TimeoutError')
+
+  it('logs one held in metadata, at any depth', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+    })
+
+    logger.error('flat', { error: aborted() })
+    logger.error('nested', { context: { error: aborted() } })
+    logger.error('in an array', { errors: [aborted()] })
+
+    expect(transport.logs.length).toBe(3)
+    expect(transport.logs[0].error).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+    expect(transport.logs[0].error.stack).toBeDefined()
+    expect(transport.logs[1].context.error).toMatchObject({ name: 'TimeoutError' })
+    expect(transport.logs[2].errors[0]).toMatchObject({ name: 'TimeoutError' })
+  })
+
+  // A separate winston code path: with a message and a non-plain second argument it lifts
+  // `message`, `stack` and `cause` onto a fresh info object and keeps the raw error under `SPLAT`,
+  // which is where the clone used to find it.
+  it('logs one passed as the second argument', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+    })
+
+    logger.error('delivery failed', aborted() as unknown as string)
+
+    expect(transport.logs[0].message).toBe('delivery failed the operation timed out')
+    expect(transport.logs[0].stack).toContain('TimeoutError')
+  })
+
+  it('logs one passed as the whole record', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+    })
+
+    logger.error(aborted() as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+  })
+
+  it('logs one with every logger-level format enabled', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      omitPaths: ['service'],
+      redactPaths: ['authorization'],
+      mapAuditLevelForOtel: true,
+      flatten: true,
+    })
+
+    logger.error('everything on', { service: 'svc', authorization: 'Bearer abc', error: aborted() })
+
+    expect(transport.logs[0].service).toBeUndefined()
+    expect(transport.logs[0].authorization).toBe('<redacted>')
+    expect(transport.logs[0].error).toContain('TimeoutError')
+  })
+
+  it('serialises one with a configured errorSerializer, wherever it sits in the record', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      redactPaths: ['authorization'],
+      errorSerializer: (error) => ({ kind: error.name, detail: error.message }),
+    })
+
+    logger.error('nested', { error: aborted() })
+    logger.error(aborted() as unknown as string)
+
+    expect(transport.logs[0].error).toEqual({ kind: 'TimeoutError', detail: 'the operation timed out' })
+    expect(transport.logs[1]).toMatchObject({ kind: 'TimeoutError', detail: 'the operation timed out' })
+  })
+})
+
 class InMemoryTransport extends TransportStream {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   logs: Record<string, any>[]

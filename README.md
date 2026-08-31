@@ -295,14 +295,21 @@ const logger = createLogger({
 
 The `Error` class's `message` and `stack` properties [are not enumerable](https://stackoverflow.com/questions/18391212/is-it-not-possible-to-stringify-an-error-using-json-stringify), so `JSON.stringify(new Error('message'))` returns `'{}'`.
 
-Winston has special handling when an `Error` is the first or second argument to a log call:
+Winston lifts `message`, `stack` and `cause` onto the record when an `Error` is the **second** argument to a log call:
 
 ```ts
-logger.log(new Error('cause')) // { message: 'cause', stack: ... }
 logger.log('message', new Error('cause')) // { message: 'message cause', stack: ... }
 ```
 
-But when errors are nested inside structured log data, `message` and `stack` are lost:
+It does nothing of the kind for the other two shapes.
+
+An `Error` passed **alone** becomes the record itself, and since `message`, `stack` and `name` are not own enumerable properties, any transport that spreads or enumerates it receives none of them:
+
+```ts
+logger.error(new Error('cause')) // { ...info } was { level: 'error' } — no message, no stack
+```
+
+An `Error` **nested** in structured log data loses `message` and `stack` for the same reason:
 
 ```ts
 try {
@@ -312,14 +319,16 @@ try {
 }
 ```
 
-`createLogger` solves this with two complementary mechanisms:
+`createLogger` solves both with two complementary mechanisms:
 
-- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport.
+- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth, the record itself included) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport. When the record is the error, `level` and winston's routing symbols are re-applied to the serialized object so routing still works.
 - `serializableErrorReplacer` is passed to the Console transport's final `format.json()` as a safety net — [logform](https://github.com/winstonjs/logform) uses [safe-stable-stringify](https://www.npmjs.com/package/safe-stable-stringify), which accepts a replacer, so any `Error` that slips through is still serialised correctly.
 
 ```ts
 format.json({ replacer: serializableErrorReplacer })
 ```
+
+> **Upgrading from 2.0.** A record that is itself an `Error` now reaches transports as a plain object rather than an `Error` instance, so that it carries `name`, `message` and `stack` as ordinary properties. A custom transport that tested `info instanceof Error` should read those properties instead.
 
 To plug in a custom transformation (for example, an `Error`-normalising function previously applied via a custom winston-transport), pass it via `errorSerializer` — it's threaded into both mechanisms:
 
@@ -330,6 +339,20 @@ const logger = createLogger({
   errorSerializer: (error) => ({ kind: error.name, detail: error.message, trace: error.stack }),
 })
 ```
+
+#### `DOMException`
+
+An `AbortSignal` carries a `DOMException` as its `reason`, and an operation cancelled through one rejects with that reason. A `DOMException` is therefore what a `catch` block receives whenever a fetch, a stream or a job is abandoned on a deadline. It needs no special treatment: log it like any other error.
+
+```ts
+try {
+  await fetch(url, { signal: AbortSignal.timeout(5_000) })
+} catch (error) {
+  logger.error('delivery failed', { error }) // { error: { name: 'TimeoutError', message: ..., stack: ... } }
+}
+```
+
+A `DOMException` keeps `message` and `name` as getter-only accessors on its prototype, which makes it the one error type a deep clone cannot rebuild. The library substitutes a serialized object before it clones the log record, using the configured `errorSerializer`, so `redactPaths` handles a `DOMException` like any other value.
 
 For direct format usage, `serializeErrorFormat` accepts the same override and `createSerializableErrorReplacer(serializer)` builds a matching JSON replacer:
 

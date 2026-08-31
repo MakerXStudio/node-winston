@@ -177,9 +177,10 @@ export interface CreateLoggerOptions {
   mapAuditLevelForOtel?: boolean
 
   /**
-   * Custom serializer used whenever an `Error` instance is encountered, both by the logger-level
-   * `serializeErrorFormat` (walks the full info tree) and by the Console transport's
-   * `format.json` replacer (safety net for errors that slip through). Defaults to the library's
+   * Custom serializer used whenever an `Error` instance is encountered: by the logger-level
+   * `serializeErrorFormat` (walks the full info tree), by `redactFormat` (which substitutes a
+   * `DOMException` no deep clone can rebuild), and by the Console transport's `format.json`
+   * replacer (safety net for errors that slip through). Defaults to the library's
    * `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when
    * non-enumerable, walks own enumerable properties, and is safe against circular references.
    */
@@ -270,7 +271,11 @@ export function createLogger(options: CreateLoggerOptions): any {
   const loggerFormats: Format[] = [serializeErrorFormat({ serializer: errorSerializer })]
   if (mapAuditForOtel) loggerFormats.push(mapAuditLevelForOtel())
   if (omitPaths) loggerFormats.push(omitFormat({ paths: omitPaths }))
-  if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue }))
+  // `errorSerializer` is passed for consistency rather than for effect: `serializeErrorFormat` runs
+  // first and leaves no live `Error` behind, so redaction has nothing left to substitute here. It
+  // matters when `redactFormat` is composed on its own, and it keeps the shapes aligned if a future
+  // path ever does let one through.
+  if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue, errorSerializer }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)
   // flatten is applied last so all prior transformations are captured in the stringified values
   if (flatten) loggerFormats.push(jsonStringifyValuesFormat({ replacer: flattenReplacer }))
