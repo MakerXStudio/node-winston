@@ -1,4 +1,4 @@
-import { LEVEL } from 'triple-beam'
+import { LEVEL, SPLAT } from 'triple-beam'
 import { config, format } from 'winston'
 import TransportStream from 'winston-transport'
 import { describe, expect, it } from 'vitest'
@@ -519,6 +519,33 @@ describe('createLogger error argument shapes', () => {
     logger.child({ requestId: 'x' }).error(new TypeError('boom') as unknown as string)
 
     expect(transport.logs[0]).toMatchObject({ requestId: 'x', message: 'boom', error: { name: 'TypeError' } })
+  })
+
+  it('leaves the error in the splat position when the message holds a format token', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error('failed: %s', new TypeError('boom'))
+
+    // The error was passed as an interpolation value, so it stays one — serialised where it lies
+    // rather than moved to `error`, which is what `format.splat()` needs to find there.
+    expect(transport.logs[0].message).toBe('failed: %s')
+    expect(transport.logs[0].error).toBeUndefined()
+    const splat = (transport.logs[0] as unknown as Record<symbol, unknown>)[SPLAT] as { name: string; message: string }[]
+    expect(splat[0]).toMatchObject({ name: 'TypeError', message: 'boom' })
+    expect(splat[0]).not.toBeInstanceOf(Error)
+  })
+
+  it('nests an error whose own message holds a format token', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error(new TypeError('bad format: %s') as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({
+      message: 'bad format: %s',
+      error: { name: 'TypeError', message: 'bad format: %s' },
+    })
   })
 
   it('leaves a call with no error untouched, splat interpolation included', () => {

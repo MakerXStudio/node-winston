@@ -54,6 +54,39 @@ describe('normalizeErrorArgs', () => {
     expect(normalizeErrorArgs([error, 'a splat value'], 0)).toEqual(['boom', { error }, 'a splat value'])
   })
 
+  it('leaves a call alone when the message holds a format token', () => {
+    // The error is an interpolation value there, not metadata, and winston merges nothing onto the
+    // record for such a call. Rewriting it would move the error out of the splat position.
+    const withToken = ['failed: %s', new TypeError('boom')]
+    const atIndexOne = ['error', 'failed: %s', new TypeError('boom')]
+
+    expect(normalizeErrorArgs(withToken, 0)).toBe(withToken)
+    expect(normalizeErrorArgs(atIndexOne, 1)).toBe(atIndexOne)
+  })
+
+  it('hands over the wrapper shape when the error carries a token in its own message', () => {
+    // Rewriting to `[err.message, { error }]` would make winston read the metadata as an
+    // interpolation value and drop it, so the error goes over as `{ message: err }` for the format
+    // to nest. Winston cannot resolve that to a record that is the error either.
+    const error = new TypeError('bad format: %s')
+
+    expect(normalizeErrorArgs([error], 0)).toEqual([{ message: error }])
+    expect(normalizeErrorArgs([error, { requestId: 'x' }], 0)).toEqual([{ requestId: 'x', message: error }])
+    expect(normalizeErrorArgs(['error', error], 1)).toEqual(['error', { message: error }])
+  })
+
+  it('leaves a tokened error with trailing arguments alone, which winston already wraps', () => {
+    const args = [new TypeError('bad format: %s'), { a: 1 }, 'x']
+
+    expect(normalizeErrorArgs(args, 0)).toBe(args)
+  })
+
+  it('normalises a non-string message holding an error in the metadata position', () => {
+    const error = new TypeError('boom')
+
+    expect(normalizeErrorArgs([42, error], 0)).toEqual([42, { error }])
+  })
+
   it('does not mutate the arguments it was given', () => {
     const error = new TypeError('boom')
     const meta = { requestId: 'x' }

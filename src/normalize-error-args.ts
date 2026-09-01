@@ -4,6 +4,12 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return prototype === Object.prototype || prototype === null
 }
 
+// Winston reads the arguments after the message as interpolation values rather than metadata when
+// the message holds a `util.format` token, and skips merging metadata onto the record altogether:
+// `formatRegExp` in `winston/lib/winston/logger.js`, matched by the one in `logform/splat.js`.
+// Declared without `g` so `test` stays stateless.
+const FORMAT_TOKEN = /%[scdjifoO%]/
+
 /**
  * Rewrites a log call's arguments so an `Error` always arrives as `{ error }` metadata.
  *
@@ -36,6 +42,17 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
  * Arguments are never dropped. Metadata already in place is merged with (`{ ...meta, error }`), and
  * anything that is not a plain object — another error, a splat value — has `{ error }` inserted
  * before it rather than over it.
+ *
+ * A message holding a `util.format` token is left alone: `logger.error('failed: %s', err)` passes
+ * the error as an interpolation value, not as metadata, and winston merges nothing onto the record
+ * for such a call. Rewriting it would take the error out of the splat position the caller chose, so
+ * those keep winston's splat semantics, with the error serialized under `SPLAT` where it lies.
+ *
+ * An error in the message position gets the same treatment for a different reason: its own message
+ * can hold a token by accident, which would have winston read the `{ error }` we just added as an
+ * interpolation value and drop it from the record. Those are handed over as `{ message: err }`
+ * instead — the shape {@link serializeErrorFormat} already nests, and one winston cannot turn back
+ * into a record that is the error.
  */
 export const normalizeErrorArgs = (args: unknown[], messageIndex: number): unknown[] => {
   const message = args[messageIndex]
@@ -43,6 +60,12 @@ export const normalizeErrorArgs = (args: unknown[], messageIndex: number): unkno
   const meta = args[metaIndex]
 
   if (message instanceof Error) {
+    if (FORMAT_TOKEN.test(message.message)) {
+      // Only the shapes winston would otherwise resolve to the error itself need rewriting; with a
+      // trailing argument it already builds `{ message: err }`, which the format nests.
+      if (args.length > metaIndex + 1 || (meta !== undefined && !isPlainObject(meta))) return args
+      return [...args.slice(0, messageIndex), { ...meta, message }]
+    }
     const next = [...args]
     next[messageIndex] = message.message
     if (meta === undefined || isPlainObject(meta)) next[metaIndex] = { ...meta, error: message }
@@ -51,6 +74,7 @@ export const normalizeErrorArgs = (args: unknown[], messageIndex: number): unkno
   }
 
   if (meta instanceof Error) {
+    if (typeof message === 'string' && FORMAT_TOKEN.test(message)) return args
     const next = [...args]
     next[metaIndex] = { error: meta }
     return next

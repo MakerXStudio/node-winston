@@ -292,13 +292,13 @@ const logger = createLogger({
 
 The `Error` class's `message` and `stack` properties [are not enumerable](https://stackoverflow.com/questions/18391212/is-it-not-possible-to-stringify-an-error-using-json-stringify), so `JSON.stringify(new Error('message'))` returns `'{}'`.
 
-Worse, winston treats an `Error` differently depending on where in the call it appears, and none of the three results resemble each other:
+Worse, winston treats an `Error` differently depending on where in the call it appears, and none of the four results resemble each other:
 
 ```ts
-logger.error(new Error('cause')) //          the record IS the error — { ...info } yields no message and no stack
-logger.error(new Error('')) //               { message: <the error> } — the branch turns on a truthy message
-logger.error('failed', new Error('cause')) // { message: 'failed cause', stack: '…' } — messages concatenated
-logger.error('failed', { error }) //         { message: 'failed', error: <the error> } — but with no message or stack
+logger.error(new Error('cause')) //                        the record IS the error — { ...info } yields no message, no stack
+logger.error(new Error('')) //                             { message: <the error> } — the branch turns on a truthy message
+logger.error('failed', new Error('cause')) //              { message: 'failed cause', stack: '…' } — messages concatenated
+logger.error('failed', { error: new Error('cause') }) //   { message: 'failed', error: <the error> } — no message, no stack
 ```
 
 `createLogger` solves all of it with three complementary mechanisms:
@@ -329,7 +329,7 @@ Nesting rather than spreading keeps the error out of the record's namespace, whi
 
 Normalising the arguments also means the error instance is never written as the record, so winston never assigns `level` or `defaultMeta` onto the error itself. That mattered more than it sounds: V8 formats `stack` lazily on first access, so a `defaultMeta.name` used to rewrite the stack's header to `my-service: boom`.
 
-Only interpolation is left alone — `logger.info('hi %s', name)` passes straight through, as does any `Error` past the metadata position, which is a splat value rather than metadata. Those are still serialised by `serializeErrorFormat` where they lie.
+Interpolation is left alone. A message holding a `util.format` token means the arguments after it are interpolation values rather than metadata — winston merges nothing onto the record for such a call — so `logger.error('failed: %s', err)` keeps the error in the splat position it was passed in, as does any `Error` past the metadata position. Those are still serialised by `serializeErrorFormat` where they lie, so `format.splat()` finds them there.
 
 > **Upgrading from 2.1.** `logger.error(err)` used to put `name`, `message` and `stack` at the top of the record; error detail now sits under `error` instead, matching `logger.error('msg', { error })`. Read `error.stack` rather than `stack`, and adjust any `omitPaths`/`redactPaths` that pointed at the old top-level keys.
 >
