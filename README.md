@@ -283,10 +283,7 @@ import { format, createLogger, transports } from 'winston'
 import { redactFormat, serializeErrorFormat } from '@makerx/node-winston'
 
 const logger = createLogger({
-  format: format.combine(
-    serializeErrorFormat(),
-    redactFormat({ paths: ['user.email', 'files[*].name'] }),
-  ),
+  format: format.combine(serializeErrorFormat(), redactFormat({ paths: ['user.email', 'files[*].name'] })),
   transports: [new transports.Console({ format: format.json() })],
 })
 ```
@@ -321,7 +318,7 @@ try {
 
 `createLogger` solves both with two complementary mechanisms:
 
-- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth, the record itself included) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport. When the record is the error, `level` and winston's routing symbols are re-applied to the serialized object so routing still works.
+- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth, the record itself included) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport. When the record is the error, `level` and winston's routing symbols are re-applied to the serialized object so routing still works. `logger.error(err)` on an error whose `message` is empty (a bare `new Error('')`, or an `AggregateError` whose detail is all in `errors`) reaches winston's other branch and arrives as `{ message: err }`; that error is hoisted onto the record too, so `message` is always a string and `name`/`stack` are siblings either way.
 - `serializableErrorReplacer` is passed to the Console transport's final `format.json()` as a safety net — [logform](https://github.com/winstonjs/logform) uses [safe-stable-stringify](https://www.npmjs.com/package/safe-stable-stringify), which accepts a replacer, so any `Error` that slips through is still serialised correctly.
 
 ```ts
