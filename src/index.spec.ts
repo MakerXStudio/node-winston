@@ -1,4 +1,4 @@
-import { LEVEL } from 'triple-beam'
+import { LEVEL, SPLAT } from 'triple-beam'
 import { config, format } from 'winston'
 import TransportStream from 'winston-transport'
 import { describe, expect, it } from 'vitest'
@@ -387,19 +387,68 @@ describe('createLogger error as the whole record', () => {
   // `logger.error(err)` makes the error the record. `message`, `stack` and `name` are not own
   // enumerable properties, so a transport that spreads or enumerates it used to receive neither
   // a message nor a stack.
-  it('gives a transport the message, name and stack', () => {
+  it('gives a transport the message and the error detail', () => {
     const transport = new InMemoryTransport({})
     const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
 
     logger.error(Object.assign(new TypeError('boom'), { code: 'E_BOOM' }) as unknown as string)
 
-    expect(transport.logs[0]).toMatchObject({
-      name: 'TypeError',
-      message: 'boom',
-      code: 'E_BOOM',
-      level: 'error',
+    expect(transport.logs[0]).toMatchObject({ message: 'boom', level: 'error' })
+    expect(transport.logs[0].error).toMatchObject({ name: 'TypeError', message: 'boom', code: 'E_BOOM' })
+    expect(transport.logs[0].error.stack).toContain('TypeError: boom')
+    // The error's own properties stay with the error rather than being spread across the record.
+    expect(transport.logs[0].code).toBeUndefined()
+  })
+
+  it('leaves the error instance unmutated, so its name and stack header survive', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      loggerOptions: { defaultMeta: { name: 'my-service' } },
     })
-    expect(transport.logs[0].stack).toContain('TypeError: boom')
+    const error = new TypeError('boom')
+
+    logger.error(error as unknown as string)
+
+    // `defaultMeta` used to be assigned onto the error itself, and V8 formats `stack` lazily, so a
+    // colliding key rewrote the header to `my-service: boom` and took the error's name with it.
+    expect(transport.logs[0].name).toBe('my-service')
+    expect(transport.logs[0].error).toMatchObject({ name: 'TypeError', message: 'boom' })
+    expect(transport.logs[0].error.stack).toContain('TypeError: boom')
+    expect(Object.keys(error)).toEqual([])
+  })
+
+  // Winston decides between making the error the record and wrapping it as `{ message: err }` purely
+  // on whether the message is truthy, so an empty one used to reach transports as an object under
+  // `message` — `[object Object]` in the pretty console.
+  it('gives a transport the same shape when the error has an empty message', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error(new Error('') as unknown as string)
+    logger.error(new AggregateError([new Error('inner')]) as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({ message: '', error: { name: 'Error', message: '' } })
+    expect(transport.logs[0].error.stack).toContain('Error')
+    expect(transport.logs[1]).toMatchObject({ message: '', error: { name: 'AggregateError' } })
+    expect(transport.logs[1].error.errors[0]).toMatchObject({ name: 'Error', message: 'inner' })
+  })
+
+  // `defaultMeta` is assigned onto the record before any format runs, and in this branch the record
+  // is the error, so a flat shape had the two `name`s fight over one key.
+  it('keeps defaultMeta and the error detail side by side', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      loggerOptions: { defaultMeta: { name: 'my-service' } },
+    })
+
+    logger.error(new Error('') as unknown as string)
+
+    expect(transport.logs[0].name).toBe('my-service')
+    expect(transport.logs[0].error).toMatchObject({ name: 'Error' })
   })
 
   it('still routes at the right level', () => {
@@ -423,6 +472,92 @@ describe('createLogger error as the whole record', () => {
     logger.log({ level: 'info', message: 'plain', stack: 'a string' })
 
     expect(transport.logs[0]).toMatchObject({ message: 'plain', stack: 'a string' })
+  })
+})
+
+describe('createLogger error argument shapes', () => {
+  // Winston branches three ways on an `Error` argument and produces three unrelated records. The
+  // arguments are normalised on the way in so it only ever sees the one shape that needs no repair.
+  const logged = (log: (logger: ReturnType<typeof createLogger>) => void) => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+    log(logger)
+    return transport.logs
+  }
+
+  it('puts the error under `error` however it was passed', () => {
+    const detail = { name: 'TypeError', message: 'boom' }
+
+    expect(logged((l) => l.error(new TypeError('boom') as unknown as string))[0]).toMatchObject({ message: 'boom', error: detail })
+    expect(logged((l) => l.error('failed', new TypeError('boom')))[0]).toMatchObject({ message: 'failed', error: detail })
+    expect(logged((l) => l.error('failed', { error: new TypeError('boom') }))[0]).toMatchObject({ message: 'failed', error: detail })
+    expect(logged((l) => l.error(new TypeError('') as unknown as string))[0]).toMatchObject({ message: '', error: { name: 'TypeError' } })
+  })
+
+  it('keeps metadata passed alongside an error', () => {
+    const logs = logged((l) => l.error(new TypeError('boom') as unknown as string, { requestId: 'x' }))
+
+    expect(logs[0]).toMatchObject({ message: 'boom', requestId: 'x', error: { name: 'TypeError' } })
+  })
+
+  it('normalises `log(level, message, error)` too', () => {
+    const logs = logged((l) => l.log('error', 'failed', new TypeError('boom')))
+
+    expect(logs[0]).toMatchObject({ message: 'failed', error: { name: 'TypeError', message: 'boom' } })
+  })
+
+  it('nests an error given to the object form of `log`, via the format', () => {
+    const logs = logged((l) => l.log({ level: 'error', message: new TypeError('boom') as unknown as string }))
+
+    expect(logs[0]).toMatchObject({ message: 'boom', error: { name: 'TypeError' } })
+  })
+
+  it('normalises a child logger', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.child({ requestId: 'x' }).error(new TypeError('boom') as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({ requestId: 'x', message: 'boom', error: { name: 'TypeError' } })
+  })
+
+  it('leaves the error in the splat position when the message holds a format token', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error('failed: %s', new TypeError('boom'))
+
+    // The error was passed as an interpolation value, so it stays one — serialised where it lies
+    // rather than moved to `error`, which is what `format.splat()` needs to find there.
+    expect(transport.logs[0].message).toBe('failed: %s')
+    expect(transport.logs[0].error).toBeUndefined()
+    const splat = (transport.logs[0] as unknown as Record<symbol, unknown>)[SPLAT] as { name: string; message: string }[]
+    expect(splat[0]).toMatchObject({ name: 'TypeError', message: 'boom' })
+    expect(splat[0]).not.toBeInstanceOf(Error)
+  })
+
+  it('nests an error whose own message holds a format token', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error(new TypeError('bad format: %s') as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({
+      message: 'bad format: %s',
+      error: { name: 'TypeError', message: 'bad format: %s' },
+    })
+  })
+
+  it('leaves a call with no error untouched, splat interpolation included', () => {
+    const logs = logged((l) => {
+      l.info('hi %s', 'there')
+      l.info('plain', { requestId: 'x' })
+    })
+
+    expect(logs[0]).toMatchObject({ message: 'hi %s' })
+    expect(logs[0].error).toBeUndefined()
+    expect(logs[1]).toMatchObject({ message: 'plain', requestId: 'x' })
+    expect(logs[1].error).toBeUndefined()
   })
 })
 
@@ -464,8 +599,12 @@ describe('createLogger DOMException', () => {
 
     logger.error('delivery failed', aborted() as unknown as string)
 
-    expect(transport.logs[0].message).toBe('delivery failed the operation timed out')
-    expect(transport.logs[0].stack).toContain('TimeoutError')
+    // Winston would have concatenated the two messages and copied `stack` up; normalising the
+    // arguments keeps the caller's message and puts the error where every other call shape has it.
+    expect(transport.logs[0].message).toBe('delivery failed')
+    expect(transport.logs[0].stack).toBeUndefined()
+    expect(transport.logs[0].error).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+    expect(transport.logs[0].error.stack).toContain('TimeoutError')
   })
 
   it('logs one passed as the whole record', () => {
@@ -478,7 +617,10 @@ describe('createLogger DOMException', () => {
 
     logger.error(aborted() as unknown as string)
 
-    expect(transport.logs[0]).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+    expect(transport.logs[0]).toMatchObject({
+      message: 'the operation timed out',
+      error: { name: 'TimeoutError', message: 'the operation timed out' },
+    })
   })
 
   it('logs one with every logger-level format enabled', () => {
@@ -512,7 +654,8 @@ describe('createLogger DOMException', () => {
     logger.error(aborted() as unknown as string)
 
     expect(transport.logs[0].error).toEqual({ kind: 'TimeoutError', detail: 'the operation timed out' })
-    expect(transport.logs[1]).toMatchObject({ kind: 'TimeoutError', detail: 'the operation timed out' })
+    // Whichever way it was logged, the error detail is in the same place, in the same shape.
+    expect(transport.logs[1].error).toEqual(transport.logs[0].error)
   })
 })
 

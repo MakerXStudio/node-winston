@@ -110,30 +110,88 @@ const replaceErrors = (value: unknown, serializer: ErrorSerializer, rebuilt: Map
 }
 
 /**
- * Replaces the record itself when it is an `Error`.
+ * Puts a serialized error under `error`, and its message in winston's `message` slot.
  *
- * `logger.error(err)` takes a winston branch of its own: it assigns `level` and the routing symbols
- * onto the error and writes the error as the record. `message`, `stack` and `name` are not own
- * enumerable properties of an `Error`, so every transport that spreads or enumerates the record
- * loses them — `{ ...info }` yields neither a message nor a stack. Serializing lifts them onto a
- * plain object.
+ * An error's own field names — `name`, `message`, `stack`, `code`, `cause`, `errors` — overlap the
+ * record's, where `level`, `defaultMeta` and the caller's metadata live. Spreading the error onto
+ * the record makes the two namespaces collide, and either precedence loses something real: the
+ * caller winning drops error fields, the error winning drops metadata. A logger carrying
+ * `defaultMeta: { name: 'my-service' }` demonstrates it — one of the two names has to go.
  *
- * `level` and every own symbol are re-applied afterwards: they are winston's routing, not error
- * data, and a custom serializer has no reason to return them. `message` is left to the serializer,
- * so one that drops it produces a record without one, exactly as it already does for a nested
- * error.
+ * Nesting removes the overlap rather than arbitrating it, and it makes `logger.error(err)` produce
+ * the same record as `logger.error('failed', { error: err })`, which is how most callers already log
+ * an error and what {@link serializeErrorFormat} has always done to a nested one. Error detail has a
+ * single path in every case: `error.stack`.
+ *
+ * `message` is still set, because it is winston's own slot rather than error data: `format.printf`
+ * and `prettyConsoleFormat` interpolate it, and an object or `undefined` there renders as
+ * `[object Object]` or `undefined`. It is taken from the serializer so a custom one that rewrites or
+ * redacts the message is respected, and falls back to `''` for one that drops it entirely.
+ *
+ * A record that carries both a wrapped error and its own `error` key is a shape winston never
+ * produces; if a caller builds one, the wrapped error wins, since it is what the log line is about.
+ *
+ * Both callers hand over a copy of the serializer's output rather than the object itself: a
+ * serializer is free to return a frozen record, or a cached one shared between calls.
+ */
+const nestError = (record: Record<string | symbol, unknown>, serialized: Record<string, unknown>): Record<string | symbol, unknown> => {
+  const message = serialized.message
+  record.message = typeof message === 'string' ? message : ''
+  record.error = serialized
+  return record
+}
+
+/**
+ * Unpicks the record when it is itself an `Error`.
+ *
+ * `logger.error(err)` takes a winston branch of its own: it assigns `level`, the routing symbols and
+ * any `defaultMeta` onto the error and writes the error as the record. `message`, `stack` and `name`
+ * are not own enumerable properties of an `Error`, so every transport that spreads or enumerates the
+ * record loses them — `{ ...info }` yields neither a message nor a stack.
+ *
+ * That leaves one object holding both the record and the error. An `Error`'s intrinsic fields are
+ * non-enumerable, so its own enumerable keys are the record side of the merge — `level`, the
+ * symbols, `defaultMeta`, and anything the thrower attached — and they are carried across to stay
+ * where a consumer expects them. The error itself is then nested: see {@link nestError}.
  */
 const serializeRecord = (error: Error, serializer: ErrorSerializer): Record<string | symbol, unknown> => {
-  // Copied, never mutated in place: a serializer is free to return a frozen record, or a cached one
-  // shared between calls, and stamping routing onto either would throw or leak.
-  const record = { ...serializer(error) } as Record<string | symbol, unknown>
-  // Guarded because `serializeErrorFormat` is also usable outside `createLogger`, on a record
-  // winston has not stamped a level onto.
-  if ('level' in error) record.level = (error as unknown as { level: unknown }).level
+  // A fresh object rather than the error: the record has to stop being an `Error` instance, or every
+  // transport that spreads or enumerates it is back where it started.
+  const record: Record<string | symbol, unknown> = {}
+  for (const key of Object.keys(error)) record[key] = (error as unknown as Record<string, unknown>)[key]
   for (const symbol of Object.getOwnPropertySymbols(error)) {
     record[symbol] = (error as unknown as Record<symbol, unknown>)[symbol]
   }
-  return record
+  const serialized = { ...serializer(error) }
+  // Winston stamped `level` onto the error before any format ran, so the serializer saw it as an own
+  // property. It is routing, not error data, and the loop above already put it at record level.
+  delete serialized.level
+  return nestError(record, serialized)
+}
+
+/**
+ * Unpicks the record when it holds an `Error` under `message`.
+ *
+ * This is the other side of the branch {@link serializeRecord} covers.
+ * `winston/lib/winston/create-logger.js:78` reads `msg && msg.message && msg || { message: msg }`,
+ * so a truthy message makes the error the record and an empty one nests it: `new Error('')`, or an
+ * `AggregateError` whose detail is all in `errors`, arrives as `{ message: theError }`. Left alone,
+ * the walk below would serialize that nested error correctly but leave it under `message`, where
+ * `prettyConsoleFormat` prints `[object Object]` and a transport querying a string message finds an
+ * object.
+ *
+ * The record is already the record here — only the error moves, to the same place
+ * {@link serializeRecord} puts it, so one call cannot produce two shapes. Every other key the
+ * caller set stays untouched: `{ message: err, requestId }` keeps its `requestId`.
+ *
+ * The shape can also be passed deliberately rather than built by winston, and there is no way to
+ * tell the two apart — both are treated as an error under `message`, since a caller who puts one
+ * there wants it logged as an error either way.
+ */
+const hoistWrappedError = (record: Record<string | symbol, unknown>, serializer: ErrorSerializer): Record<string | symbol, unknown> => {
+  const wrapped = record.message
+  if (!(wrapped instanceof Error)) return record
+  return nestError(record, { ...serializer(wrapped) })
 }
 
 /**
@@ -141,10 +199,14 @@ const serializeRecord = (error: Error, serializer: ErrorSerializer): Record<stri
  * with the plain-object result of the configured serializer so downstream formats and
  * transports see JSON-serializable errors with `message` and `stack` intact.
  *
- * A record that is itself an `Error` is replaced outright: see {@link serializeRecord}. Otherwise
- * only the top-level `info` object is mutated (to preserve winston's Symbol-keyed
- * routing props); nested objects and arrays are rebuilt, so caller-supplied metadata
- * references are never mutated.
+ * `logger.error(err)` reaches this format as one of two shapes, decided by
+ * `winston/lib/winston/create-logger.js:78` purely on whether the error's `message` is truthy: the
+ * record either *is* the error, or nests it as `{ message: err }`. Both are normalised before the
+ * walk runs to the shape a nested error already has — `{ message: <string>, error: { … } }` — so
+ * neither depends on which branch winston took: see {@link serializeRecord},
+ * {@link hoistWrappedError} and {@link nestError}. Otherwise only the top-level `info` object is
+ * mutated (to preserve winston's Symbol-keyed routing props); nested objects and arrays are
+ * rebuilt, so caller-supplied metadata references are never mutated.
  *
  * Errors under the `SPLAT` symbol are replaced too. Winston keeps the raw metadata argument there
  * in addition to merging its properties onto `info`, so an `Error` logged as
@@ -169,7 +231,9 @@ export const serializeErrorFormat = format((info, opts) => {
       seen.delete(value)
     }
   }
-  const record = (info instanceof Error ? serializeRecord(info, serializer) : info) as unknown as Record<string | symbol, unknown>
+  const record = (info instanceof Error
+    ? serializeRecord(info, serializer)
+    : hoistWrappedError(info as unknown as Record<string | symbol, unknown>, serializer)) as unknown as Record<string | symbol, unknown>
   const seen = new WeakSet<object>([record])
   for (const key of Object.keys(record)) record[key] = walk(record[key], seen)
   const splat = record[SPLAT]
