@@ -149,6 +149,24 @@ describe('withNormalizedErrorArgs', () => {
     expect(log$.calls[1]).toEqual([{ level: 'error', message: error }])
   })
 
+  it('treats `log` as `log` even when it appears in the level list', () => {
+    const error = new TypeError('boom')
+    const calls: unknown[][] = []
+    const logger = {
+      log(...args: unknown[]) {
+        calls.push(args)
+      },
+    }
+    // Winston warns and skips a level named `log`, so this is `Logger.prototype.log`, not a level.
+    withNormalizedErrorArgs(logger, ['log', 'error'])
+
+    logger.log('error', error)
+
+    // The message is read at index 1, past the level — not at index 0, which would take the level
+    // string for the message and leave the record without one.
+    expect(calls).toEqual([['error', 'boom', { error }]])
+  })
+
   it('skips a level with no method on the logger', () => {
     const logger: Record<string, unknown> = {}
 

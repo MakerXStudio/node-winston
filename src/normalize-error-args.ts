@@ -13,13 +13,14 @@ const FORMAT_TOKEN = /%[scdjifoO%]/
 /**
  * Rewrites a log call's arguments so an `Error` always arrives as `{ error }` metadata.
  *
- * Winston decides what to do with an `Error` argument in three different places, and the shapes it
- * produces have nothing in common:
+ * Winston builds four unrelated records from an `Error` argument, depending on where in the call it
+ * appears. The first two come from the same expression, `create-logger.js:78`, which resolves one way
+ * or the other on whether the message is truthy:
  *
  * | Call                              | Record                                                |
  * | --------------------------------- | ----------------------------------------------------- |
  * | `logger.error(err)`               | the record *is* the error                             |
- * | `logger.error(new Error(''))`     | `{ message: err }` — the branch turns on a truthy message |
+ * | `logger.error(new Error(''))`     | `{ message: err }`                                    |
  * | `logger.error('failed', err)`     | `{ message: 'failed ' + err.message, stack }`, error under `SPLAT` |
  * | `logger.error('failed', { err })` | `{ message: 'failed', error: err }`                   |
  *
@@ -31,7 +32,7 @@ const FORMAT_TOKEN = /%[scdjifoO%]/
  *
  * `messageIndex` is where the message sits in `args` — 0 for a level method (`logger.error(…)`), 1
  * for `logger.log(level, …)`. Only that position and the metadata position after it are considered;
- * an `Error` further along is a splat interpolation value, which {@link serializeErrorFormat}
+ * an `Error` further along is a splat interpolation value, which `serializeErrorFormat`
  * serializes where it lies.
  *
  * An error taking the message position keeps its own `message` on the record, so the log line still
@@ -51,8 +52,8 @@ const FORMAT_TOKEN = /%[scdjifoO%]/
  * An error in the message position gets the same treatment for a different reason: its own message
  * can hold a token by accident, which would have winston read the `{ error }` we just added as an
  * interpolation value and drop it from the record. Those are handed over as `{ message: err }`
- * instead — the shape {@link serializeErrorFormat} already nests, and one winston cannot turn back
- * into a record that is the error.
+ * instead — the shape `serializeErrorFormat` already nests, and one winston cannot turn back into a
+ * record that is the error.
  */
 export const normalizeErrorArgs = (args: unknown[], messageIndex: number): unknown[] => {
   const message = args[messageIndex]
@@ -97,6 +98,10 @@ export const withNormalizedErrorArgs = <T extends object>(logger: T, levelNames:
   const target = logger as unknown as Record<string, unknown>
 
   for (const level of levelNames) {
+    // Winston refuses to define a level method named `log` — it would shadow `Logger.prototype.log`
+    // — and warns instead, so `target.log` is that method rather than a level. The block below
+    // wraps it with the right message position; skipping it here avoids a second, pointless pass.
+    if (level === 'log') continue
     const original = target[level]
     if (typeof original !== 'function') continue
     const method = original as (this: unknown, ...args: unknown[]) => unknown

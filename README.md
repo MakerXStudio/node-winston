@@ -303,7 +303,7 @@ logger.error('failed', { error: new Error('cause') }) //   { message: 'failed', 
 
 `createLogger` solves all of it with three complementary mechanisms:
 
-- The logger's own level methods (and `log`) normalise their arguments, so an `Error` always reaches winston as `{ error }` metadata and never as the record or the message. This is what makes the four calls above agree; the rest is winston's ordinary metadata handling.
+- The logger's own level methods (and `log`) normalise their arguments, so an `Error` reaches winston as `{ error }` metadata rather than as the record or the message. This is what makes the four calls above agree; the rest is winston's ordinary metadata handling. Interpolation is the one exception — see below.
 - `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth, the record itself included) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport, and still covers the record shapes directly — for `logger.write`, winston's exception handlers, or the format used on its own outside `createLogger`.
 - `serializableErrorReplacer` is passed to the Console transport's final `format.json()` as a safety net — [logform](https://github.com/winstonjs/logform) uses [safe-stable-stringify](https://www.npmjs.com/package/safe-stable-stringify), which accepts a replacer, so any `Error` that slips through is still serialised correctly.
 
