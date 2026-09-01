@@ -264,15 +264,15 @@ The format rewrites the triple-beam `LEVEL` symbol from `audit` to `info` (so OT
 
 Every format used by `createLogger` is also exported for direct use with your own winston setup.
 
-| Format                      | Purpose                                                                                                                                                                                                                    |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serializeErrorFormat`      | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. An error logged on its own is nested under `error`. |
-| `omitFormat`                | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                                                                        |
-| `omitNilFormat`             | Removes top-level `null` or `undefined` values.                                                                                                                                                                            |
-| `redactFormat`              | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                                                                              |
-| `jsonStringifyValuesFormat` | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`.                                                                                               |
-| `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                                                                             |
-| `mapAuditLevelForOtel`      | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration.                                                               |
+| Format                      | Purpose                                                                                                                                                                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serializeErrorFormat`      | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. A record that is itself an error, or holds one under `message`, is nested under `error`. |
+| `omitFormat`                | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                                                                                                             |
+| `omitNilFormat`             | Removes top-level `null` or `undefined` values.                                                                                                                                                                                                                 |
+| `redactFormat`              | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                                                                                                                   |
+| `jsonStringifyValuesFormat` | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`.                                                                                                                                    |
+| `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                                                                                                                  |
+| `mapAuditLevelForOtel`      | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration.                                                                                                    |
 
 `redactFormat` paths accept plain keys (`email`, matched at every level), dot-notation paths (`user.email`), and `[*]` array wildcards to iterate every element of an array segment — for example `files[*].name`, `users[*].addresses[*].zip`, or `tags[*]` to redact each element of a primitive array.
 
@@ -292,33 +292,19 @@ const logger = createLogger({
 
 The `Error` class's `message` and `stack` properties [are not enumerable](https://stackoverflow.com/questions/18391212/is-it-not-possible-to-stringify-an-error-using-json-stringify), so `JSON.stringify(new Error('message'))` returns `'{}'`.
 
-Winston lifts `message`, `stack` and `cause` onto the record when an `Error` is the **second** argument to a log call:
+Worse, winston treats an `Error` differently depending on where in the call it appears, and none of the three results resemble each other:
 
 ```ts
-logger.log('message', new Error('cause')) // { message: 'message cause', stack: ... }
+logger.error(new Error('cause')) //          the record IS the error — { ...info } yields no message and no stack
+logger.error(new Error('')) //               { message: <the error> } — the branch turns on a truthy message
+logger.error('failed', new Error('cause')) // { message: 'failed cause', stack: '…' } — messages concatenated
+logger.error('failed', { error }) //         { message: 'failed', error: <the error> } — but with no message or stack
 ```
 
-It does nothing of the kind for the other two shapes.
+`createLogger` solves all of it with three complementary mechanisms:
 
-An `Error` passed **alone** becomes the record itself, and since `message`, `stack` and `name` are not own enumerable properties, any transport that spreads or enumerates it receives none of them:
-
-```ts
-logger.error(new Error('cause')) // { ...info } was { level: 'error' } — no message, no stack
-```
-
-An `Error` **nested** in structured log data loses `message` and `stack` for the same reason:
-
-```ts
-try {
-  /* ... */
-} catch (error) {
-  logger.log('message', { info, error }) // { message: 'message', error: {} }
-}
-```
-
-`createLogger` solves both with two complementary mechanisms:
-
-- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth, the record itself included) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport.
+- The logger's own level methods (and `log`) normalise their arguments, so an `Error` always reaches winston as `{ error }` metadata and never as the record or the message. This is what makes the four calls above agree; the rest is winston's ordinary metadata handling.
+- `serializeErrorFormat` runs at the logger level and walks the log info, replacing any `Error` instance (at any depth, the record itself included) with a plain, JSON-serializable object via the library's `serializeError`. This applies to every transport, and still covers the record shapes directly — for `logger.write`, winston's exception handlers, or the format used on its own outside `createLogger`.
 - `serializableErrorReplacer` is passed to the Console transport's final `format.json()` as a safety net — [logform](https://github.com/winstonjs/logform) uses [safe-stable-stringify](https://www.npmjs.com/package/safe-stable-stringify), which accepts a replacer, so any `Error` that slips through is still serialised correctly.
 
 ```ts
@@ -327,22 +313,27 @@ format.json({ replacer: serializableErrorReplacer })
 
 #### One shape, however the error was logged
 
-Winston decides what to do with `logger.error(err)` on one test — `msg && msg.message && msg || { message: msg }` — so an error with a message becomes the record itself, and one with an empty message (a bare `new Error('')`, or an `AggregateError` whose detail is all in `errors`) is wrapped as `{ message: err }`. Left as they arrive, the same call produces two different records, and the wrapped one renders as `[object Object]`.
-
-Both are normalised to the shape a nested error already has, so error detail is always at `error` and `message` is always a string:
+Error detail is always at `error`, and `message` is always the line you wrote:
 
 ```ts
-logger.error(new Error('boom')) //                      { level, message: 'boom', error: { name, message, stack } }
-logger.error(new Error('')) //                          { level, message: '',     error: { name, message, stack } }
-logger.error(new AggregateError([inner])) //             { level, message: '',     error: { name, stack, errors: [ … ] } }
+logger.error(new Error('boom')) //                      { level, message: 'boom',   error: { name, message, stack } }
+logger.error('failed', new Error('boom')) //             { level, message: 'failed', error: { name, message, stack } }
 logger.error('failed', { error: new Error('boom') }) //  { level, message: 'failed', error: { name, message, stack } }
+logger.error(new Error('')) //                          { level, message: '',       error: { name, message, stack } }
+logger.error(new AggregateError([inner])) //             { level, message: '',       error: { name, stack, errors: [ … ] } }
 ```
 
-Nesting rather than spreading also keeps the error out of the record's namespace, which is where `level`, `defaultMeta` and your own metadata live. A logger with `defaultMeta: { name: 'my-service' }` keeps both names: `name` is the service, `error.name` is the error.
+An error given as the whole call keeps its own message on the line, so nothing is lost; anything else you pass alongside it is kept as metadata, and a child logger behaves the same way.
 
-> **Upgrading from 2.1.** `logger.error(err)` used to put `name`, `message` and `stack` at the top of the record; the error detail now sits under `error` instead, matching `logger.error('msg', { error })`. Read `error.stack` rather than `stack`, and adjust any `omitPaths`/`redactPaths` that pointed at the old top-level keys. `message` is unchanged — still the error's message.
+Nesting rather than spreading keeps the error out of the record's namespace, which is where `level`, `defaultMeta` and your own metadata live — they overlap on `name`, `message`, `stack`, `code`, `cause` and `errors`, and something has to give. A logger with `defaultMeta: { name: 'my-service' }` keeps both names: `name` is the service, `error.name` is the error.
+
+Normalising the arguments also means the error instance is never written as the record, so winston never assigns `level` or `defaultMeta` onto the error itself. That mattered more than it sounds: V8 formats `stack` lazily on first access, so a `defaultMeta.name` used to rewrite the stack's header to `my-service: boom`.
+
+Only interpolation is left alone — `logger.info('hi %s', name)` passes straight through, as does any `Error` past the metadata position, which is a splat value rather than metadata. Those are still serialised by `serializeErrorFormat` where they lie.
+
+> **Upgrading from 2.1.** `logger.error(err)` used to put `name`, `message` and `stack` at the top of the record; error detail now sits under `error` instead, matching `logger.error('msg', { error })`. Read `error.stack` rather than `stack`, and adjust any `omitPaths`/`redactPaths` that pointed at the old top-level keys.
 >
-> Winston's third shape is untouched: `logger.error('msg', err)` is handled by winston core, which concatenates the messages and lifts `stack` onto the record before any format runs.
+> `logger.error('msg', err)` no longer has the error's message concatenated onto yours, and no longer copies `stack` to the top of the record: `message` is `'msg'`, and the detail is under `error`.
 
 > **Upgrading from 2.0.** A record that is itself an `Error` now reaches transports as a plain object rather than an `Error` instance. A custom transport that tested `info instanceof Error` should read the serialised properties instead.
 

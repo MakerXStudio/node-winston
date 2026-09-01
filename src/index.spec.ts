@@ -393,9 +393,30 @@ describe('createLogger error as the whole record', () => {
 
     logger.error(Object.assign(new TypeError('boom'), { code: 'E_BOOM' }) as unknown as string)
 
-    expect(transport.logs[0]).toMatchObject({ message: 'boom', code: 'E_BOOM', level: 'error' })
+    expect(transport.logs[0]).toMatchObject({ message: 'boom', level: 'error' })
     expect(transport.logs[0].error).toMatchObject({ name: 'TypeError', message: 'boom', code: 'E_BOOM' })
     expect(transport.logs[0].error.stack).toContain('TypeError: boom')
+    // The error's own properties stay with the error rather than being spread across the record.
+    expect(transport.logs[0].code).toBeUndefined()
+  })
+
+  it('leaves the error instance unmutated, so its name and stack header survive', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      loggerOptions: { defaultMeta: { name: 'my-service' } },
+    })
+    const error = new TypeError('boom')
+
+    logger.error(error as unknown as string)
+
+    // `defaultMeta` used to be assigned onto the error itself, and V8 formats `stack` lazily, so a
+    // colliding key rewrote the header to `my-service: boom` and took the error's name with it.
+    expect(transport.logs[0].name).toBe('my-service')
+    expect(transport.logs[0].error).toMatchObject({ name: 'TypeError', message: 'boom' })
+    expect(transport.logs[0].error.stack).toContain('TypeError: boom')
+    expect(Object.keys(error)).toEqual([])
   })
 
   // Winston decides between making the error the record and wrapping it as `{ message: err }` purely
@@ -454,6 +475,65 @@ describe('createLogger error as the whole record', () => {
   })
 })
 
+describe('createLogger error argument shapes', () => {
+  // Winston branches three ways on an `Error` argument and produces three unrelated records. The
+  // arguments are normalised on the way in so it only ever sees the one shape that needs no repair.
+  const logged = (log: (logger: ReturnType<typeof createLogger>) => void) => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+    log(logger)
+    return transport.logs
+  }
+
+  it('puts the error under `error` however it was passed', () => {
+    const detail = { name: 'TypeError', message: 'boom' }
+
+    expect(logged((l) => l.error(new TypeError('boom') as unknown as string))[0]).toMatchObject({ message: 'boom', error: detail })
+    expect(logged((l) => l.error('failed', new TypeError('boom')))[0]).toMatchObject({ message: 'failed', error: detail })
+    expect(logged((l) => l.error('failed', { error: new TypeError('boom') }))[0]).toMatchObject({ message: 'failed', error: detail })
+    expect(logged((l) => l.error(new TypeError('') as unknown as string))[0]).toMatchObject({ message: '', error: { name: 'TypeError' } })
+  })
+
+  it('keeps metadata passed alongside an error', () => {
+    const logs = logged((l) => l.error(new TypeError('boom') as unknown as string, { requestId: 'x' }))
+
+    expect(logs[0]).toMatchObject({ message: 'boom', requestId: 'x', error: { name: 'TypeError' } })
+  })
+
+  it('normalises `log(level, message, error)` too', () => {
+    const logs = logged((l) => l.log('error', 'failed', new TypeError('boom')))
+
+    expect(logs[0]).toMatchObject({ message: 'failed', error: { name: 'TypeError', message: 'boom' } })
+  })
+
+  it('nests an error given to the object form of `log`, via the format', () => {
+    const logs = logged((l) => l.log({ level: 'error', message: new TypeError('boom') as unknown as string }))
+
+    expect(logs[0]).toMatchObject({ message: 'boom', error: { name: 'TypeError' } })
+  })
+
+  it('normalises a child logger', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.child({ requestId: 'x' }).error(new TypeError('boom') as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({ requestId: 'x', message: 'boom', error: { name: 'TypeError' } })
+  })
+
+  it('leaves a call with no error untouched, splat interpolation included', () => {
+    const logs = logged((l) => {
+      l.info('hi %s', 'there')
+      l.info('plain', { requestId: 'x' })
+    })
+
+    expect(logs[0]).toMatchObject({ message: 'hi %s' })
+    expect(logs[0].error).toBeUndefined()
+    expect(logs[1]).toMatchObject({ message: 'plain', requestId: 'x' })
+    expect(logs[1].error).toBeUndefined()
+  })
+})
+
 describe('createLogger DOMException', () => {
   // An operation cancelled through an `AbortSignal` rejects with a `DOMException`, whose `message` and `name` are
   // getter-only prototype accessors. A deep clone cannot rebuild one, so redaction used to throw a
@@ -492,8 +572,12 @@ describe('createLogger DOMException', () => {
 
     logger.error('delivery failed', aborted() as unknown as string)
 
-    expect(transport.logs[0].message).toBe('delivery failed the operation timed out')
-    expect(transport.logs[0].stack).toContain('TimeoutError')
+    // Winston would have concatenated the two messages and copied `stack` up; normalising the
+    // arguments keeps the caller's message and puts the error where every other call shape has it.
+    expect(transport.logs[0].message).toBe('delivery failed')
+    expect(transport.logs[0].stack).toBeUndefined()
+    expect(transport.logs[0].error).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+    expect(transport.logs[0].error.stack).toContain('TimeoutError')
   })
 
   it('logs one passed as the whole record', () => {

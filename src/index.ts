@@ -16,6 +16,7 @@ import { redactFormat } from './redact-format'
 import { createSerializableErrorReplacer, ErrorSerializer, serializeError } from './serialize-error'
 import { serializeErrorFormat } from './serialize-error-format'
 import { mapAuditLevelForOtel } from './map-audit-level-for-otel'
+import { withNormalizedErrorArgs } from './normalize-error-args'
 
 // `winston/lib/winston/transports` is a CJS deep import that can't be consumed from ESM: it's a
 // directory import, and even with a `/index.js` suffix its named exports are defined via
@@ -288,5 +289,7 @@ export function createLogger(options: CreateLoggerOptions): any {
     transports,
   }
 
-  return winstonCreateLogger(loggerOptions)
+  // Wrapped rather than returned bare: winston branches three ways on an `Error` argument, and only
+  // one of the shapes it produces needs no repair. See {@link withNormalizedErrorArgs}.
+  return withNormalizedErrorArgs(winstonCreateLogger(loggerOptions), Object.keys(loggerOptions.levels ?? defaultLevels))
 }
