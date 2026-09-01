@@ -387,19 +387,47 @@ describe('createLogger error as the whole record', () => {
   // `logger.error(err)` makes the error the record. `message`, `stack` and `name` are not own
   // enumerable properties, so a transport that spreads or enumerates it used to receive neither
   // a message nor a stack.
-  it('gives a transport the message, name and stack', () => {
+  it('gives a transport the message and the error detail', () => {
     const transport = new InMemoryTransport({})
     const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
 
     logger.error(Object.assign(new TypeError('boom'), { code: 'E_BOOM' }) as unknown as string)
 
-    expect(transport.logs[0]).toMatchObject({
-      name: 'TypeError',
-      message: 'boom',
-      code: 'E_BOOM',
-      level: 'error',
+    expect(transport.logs[0]).toMatchObject({ message: 'boom', code: 'E_BOOM', level: 'error' })
+    expect(transport.logs[0].error).toMatchObject({ name: 'TypeError', message: 'boom', code: 'E_BOOM' })
+    expect(transport.logs[0].error.stack).toContain('TypeError: boom')
+  })
+
+  // Winston decides between making the error the record and wrapping it as `{ message: err }` purely
+  // on whether the message is truthy, so an empty one used to reach transports as an object under
+  // `message` — `[object Object]` in the pretty console.
+  it('gives a transport the same shape when the error has an empty message', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error(new Error('') as unknown as string)
+    logger.error(new AggregateError([new Error('inner')]) as unknown as string)
+
+    expect(transport.logs[0]).toMatchObject({ message: '', error: { name: 'Error', message: '' } })
+    expect(transport.logs[0].error.stack).toContain('Error')
+    expect(transport.logs[1]).toMatchObject({ message: '', error: { name: 'AggregateError' } })
+    expect(transport.logs[1].error.errors[0]).toMatchObject({ name: 'Error', message: 'inner' })
+  })
+
+  // `defaultMeta` is assigned onto the record before any format runs, and in this branch the record
+  // is the error, so a flat shape had the two `name`s fight over one key.
+  it('keeps defaultMeta and the error detail side by side', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      loggerOptions: { defaultMeta: { name: 'my-service' } },
     })
-    expect(transport.logs[0].stack).toContain('TypeError: boom')
+
+    logger.error(new Error('') as unknown as string)
+
+    expect(transport.logs[0].name).toBe('my-service')
+    expect(transport.logs[0].error).toMatchObject({ name: 'Error' })
   })
 
   it('still routes at the right level', () => {
@@ -478,7 +506,10 @@ describe('createLogger DOMException', () => {
 
     logger.error(aborted() as unknown as string)
 
-    expect(transport.logs[0]).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
+    expect(transport.logs[0]).toMatchObject({
+      message: 'the operation timed out',
+      error: { name: 'TimeoutError', message: 'the operation timed out' },
+    })
   })
 
   it('logs one with every logger-level format enabled', () => {
@@ -512,7 +543,8 @@ describe('createLogger DOMException', () => {
     logger.error(aborted() as unknown as string)
 
     expect(transport.logs[0].error).toEqual({ kind: 'TimeoutError', detail: 'the operation timed out' })
-    expect(transport.logs[1]).toMatchObject({ kind: 'TimeoutError', detail: 'the operation timed out' })
+    // Whichever way it was logged, the error detail is in the same place, in the same shape.
+    expect(transport.logs[1].error).toEqual(transport.logs[0].error)
   })
 })
 

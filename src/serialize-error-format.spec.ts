@@ -123,15 +123,19 @@ describe('serializeErrorFormat', () => {
     expect(result[SPLAT][1].error).toMatchObject({ message: 'boom' })
     expect(result[SPLAT][1].when).toBeInstanceOf(Date)
   })
-  it('replaces a record that is itself an error, keeping level and the routing symbols', () => {
+  it('nests a record that is itself an error, keeping level and the routing symbols', () => {
     const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
     const fmt = serializeErrorFormat()
 
     const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
 
     expect(result).not.toBeInstanceOf(Error)
-    expect(result).toMatchObject({ name: 'TypeError', message: 'boom', level: 'error' })
-    expect(result.stack).toBeDefined()
+    expect(result).toMatchObject({ message: 'boom', level: 'error' })
+    const nested = result.error as { name: string; message: string; stack: string; level?: unknown }
+    expect(nested).toMatchObject({ name: 'TypeError', message: 'boom' })
+    expect(nested.stack).toBeDefined()
+    // Winston's routing, stamped onto the error itself, stays at record level.
+    expect('level' in nested).toBe(false)
     expect(result[LEVEL]).toBe('error')
   })
 
@@ -141,23 +145,51 @@ describe('serializeErrorFormat', () => {
 
     const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
 
-    expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
+    expect(result).toMatchObject({ error: { kind: 'TypeError' }, level: 'error' })
+    // The serializer returned no `message`, and winston's slot still has to hold a string.
+    expect(result.message).toBe('')
     expect(result[LEVEL]).toBe('error')
   })
 
-  it('hoists an error winston nested under `message` because its message was empty', () => {
-    const error = new Error('')
-    const input = { [LEVEL]: 'error', level: 'error', message: error } as unknown as TransformableInfo
+  it('keeps metadata assigned onto a record that is itself an error at record level', () => {
+    const error = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error', name: 'my-service', requestId: 'x' })
+    const fmt = serializeErrorFormat()
+
+    const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
+
+    // `defaultMeta` is assigned onto the error before any format runs, so its keys are indistinguishable
+    // from the error's own enumerable ones. They are carried to record level, where a consumer expects
+    // them; the serializer still sees them on the error, so they appear inside `error` as well.
+    expect(result).toMatchObject({ name: 'my-service', requestId: 'x', message: 'boom' })
+    expect(result.error).toMatchObject({ name: 'my-service', requestId: 'x' })
+  })
+
+  it('nests an error winston wrapped under `message` because its message was empty', () => {
+    const input = { [LEVEL]: 'error', level: 'error', message: new Error('') } as unknown as TransformableInfo
     const fmt = serializeErrorFormat()
 
     const result = fmt.transform(input, fmt.options) as unknown as Record<string | symbol, unknown>
 
-    expect(typeof result.message).toBe('string')
-    expect(result).toMatchObject({ name: 'Error', message: '', level: 'error' })
-    expect(result.stack).toBeDefined()
+    expect(result.message).toBe('')
+    const nested = result.error as { name: string; message: string; stack: string }
+    expect(nested).toMatchObject({ name: 'Error', message: '' })
+    expect(nested.stack).toBeDefined()
   })
 
-  it('keeps the level and routing symbols when hoisting a nested error', () => {
+  it('produces the same shape whichever branch winston took', () => {
+    const fmt = serializeErrorFormat()
+    const asRecord = Object.assign(new TypeError('boom'), { [LEVEL]: 'error', level: 'error' })
+    const wrapped = { [LEVEL]: 'error', level: 'error', message: new TypeError('boom') } as unknown as TransformableInfo
+
+    const fromRecord = fmt.transform(asRecord as unknown as TransformableInfo, fmt.options) as unknown as Record<string, unknown>
+    const fromWrapper = fmt.transform(wrapped, fmt.options) as unknown as Record<string, unknown>
+
+    expect(Object.keys(fromRecord).sort()).toEqual(Object.keys(fromWrapper).sort())
+    expect((fromRecord.error as { name: string }).name).toBe((fromWrapper.error as { name: string }).name)
+    expect(fromRecord.message).toBe(fromWrapper.message)
+  })
+
+  it('keeps the level and routing symbols when nesting a wrapped error', () => {
     const input = { [LEVEL]: 'error', level: 'error', message: new Error('') } as unknown as TransformableInfo
     const fmt = serializeErrorFormat()
 
@@ -167,39 +199,38 @@ describe('serializeErrorFormat', () => {
     expect(result.level).toBe('error')
   })
 
-  it('hoists an AggregateError, keeping its serialised errors', () => {
+  it('nests a wrapped AggregateError, keeping its serialised errors', () => {
     const input = { [LEVEL]: 'error', level: 'error', message: new AggregateError([new Error('inner')]) } as unknown as TransformableInfo
     const fmt = serializeErrorFormat()
 
     const result = fmt.transform(input, fmt.options) as unknown as Record<string | symbol, unknown>
 
-    expect(result.name).toBe('AggregateError')
-    const errors = result.errors as { name: string; message: string; stack: string }[]
-    expect(errors).toHaveLength(1)
-    expect(errors[0]).toMatchObject({ name: 'Error', message: 'inner' })
-    expect(errors[0].stack).toBeDefined()
-    expect(errors[0]).not.toBeInstanceOf(Error)
+    const nested = result.error as { name: string; errors: { name: string; message: string; stack: string }[] }
+    expect(nested.name).toBe('AggregateError')
+    expect(nested.errors).toHaveLength(1)
+    expect(nested.errors[0]).toMatchObject({ name: 'Error', message: 'inner' })
+    expect(nested.errors[0].stack).toBeDefined()
+    expect(nested.errors[0]).not.toBeInstanceOf(Error)
   })
 
-  it("leaves the record's own keys alone when hoisting a nested error", () => {
+  it("leaves the record's own keys alone when nesting a wrapped error", () => {
     const input = { [LEVEL]: 'error', level: 'error', message: new Error(''), requestId: 'x' } as unknown as TransformableInfo
     const fmt = serializeErrorFormat()
 
     const result = fmt.transform(input, fmt.options) as unknown as Record<string | symbol, unknown>
 
     expect(result.requestId).toBe('x')
-    expect(result.name).toBe('Error')
+    expect(result.error).toMatchObject({ name: 'Error' })
   })
 
-  it('hoists a nested error with the configured serializer', () => {
+  it('nests a wrapped error with the configured serializer', () => {
     const input = { [LEVEL]: 'error', level: 'error', message: new TypeError('') } as unknown as TransformableInfo
     const fmt = serializeErrorFormat({ serializer: (e: Error) => ({ kind: e.name }) })
 
     const result = fmt.transform(input, fmt.options) as unknown as Record<string | symbol, unknown>
 
-    expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
-    // The serializer returned no `message`, so the record has none rather than the live error.
-    expect('message' in result).toBe(false)
+    expect(result).toMatchObject({ error: { kind: 'TypeError' }, level: 'error' })
+    expect(result.message).toBe('')
   })
 
   it('leaves a plain info object that merely looks like a log record alone', () => {
@@ -237,7 +268,7 @@ describe('serializeErrorFormat', () => {
 
     const result = fmt.transform(error as unknown as TransformableInfo, fmt.options) as unknown as Record<string | symbol, unknown>
 
-    expect(result).toMatchObject({ kind: 'TypeError', level: 'error' })
+    expect(result).toMatchObject({ error: { kind: 'TypeError' }, level: 'error' })
     expect(result[LEVEL]).toBe('error')
   })
   it('leaves a cyclic splat argument holding no error completely alone', () => {
