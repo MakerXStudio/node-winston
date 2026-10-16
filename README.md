@@ -22,7 +22,7 @@ See [Migrating from v1](#migrating-from-v1) at the bottom for breaking changes a
 
 Formats are applied in two layers:
 
-- **Logger-level** (applied to all transports, in order): `serializeErrorFormat` → `mapAuditLevelForOtel` (if enabled) → `omitFormat` (if `omitPaths`) → `redactFormat` (if `redactPaths`) → `loggerOptions.format` (if supplied) → `jsonStringifyValuesFormat` (if `flatten`; always last so it captures every prior transformation).
+- **Logger-level** (applied to all transports, in order): `serializeErrorFormat` → `mapAuditLevelForOtel` (if enabled) → `omitFormat` (if `omitPaths`) → `redactFormat` (if `redactPaths`) → `loggerOptions.format` (if supplied) → `otelAttributesFormat` (if `flatten: 'otel'`) or `jsonStringifyValuesFormat` (if `flatten: true`); always last so it captures every prior transformation.
 - **Console transport** (applied to Console output only): `omitNilFormat` → any `consoleFormats` → either `prettyConsoleFormat` (when `consoleFormat: 'pretty'`) or `timestamp` + `json` (when `consoleFormat: 'json'`).
 
 ### Options
@@ -36,8 +36,8 @@ Formats are applied in two layers:
 | `omitPaths`            | `string[]`                | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                                  |
 | `redactPaths`          | `string[]`                | Dot-notation paths whose values are replaced with `redactedValue`. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                  |
 | `redactedValue`        | `string`                  | Replacement value used by `redactPaths`. Defaults to `'<redacted>'`.                                                                                                                                                                                                                                                                                                        |
-| `flatten`              | `boolean`                 | When `true`, serialises every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape for transports that expect scalar values. See [OpenTelemetry](#opentelemetry).                                                                                                                                                                     |
-| `flattenReplacer`      | `(key, value) => any`     | Optional `JSON.stringify` replacer used when `flatten` serialises each top-level value.                                                                                                                                                                                                                                                                                     |
+| `flatten`              | `boolean \| 'otel'`       | Flattens every record as the last logger-level format. `'otel'` produces the attribute shape `@opentelemetry/winston-transport` 0.29 and later needs; `true` serialises every object value to a JSON string, for a transport before 0.29. See [OpenTelemetry](#opentelemetry).                                                                                              |
+| `flattenReplacer`      | `(key, value) => any`     | Optional `JSON.stringify` replacer used by either `flatten` mode for every value it serialises.                                                                                                                                                                                                                                                                             |
 | `errorSerializer`      | `ErrorSerializer`         | Custom serializer applied to every `Error` instance at the logger level (via `serializeErrorFormat`) and as the Console transport's `format.json` replacer. Defaults to the library's `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when non-enumerable, walks own enumerable properties, and is safe against circular references. |
 | `mapAuditLevelForOtel` | `boolean`                 | When `true`, rewrites the triple-beam `LEVEL` from `audit` to `info` and copies the original onto `logLevel` for OTEL compatibility. See [Shipping the audit level via OpenTelemetry](#shipping-the-audit-level-via-opentelemetry).                                                                                                                                         |
 | `loggerOptions`        | `LoggerOptions`           | Winston logger options (e.g. `level`, `defaultMeta`). A `format` supplied here is appended after the library's logger-level formats but still runs before `flatten` when enabled.                                                                                                                                                                                           |
@@ -226,23 +226,60 @@ In-flight dispatches are tracked internally and drained via `Promise.allSettled`
 
 ## OpenTelemetry
 
-When shipping logs via OpenTelemetry, install [`@opentelemetry/instrumentation-winston`](https://www.npmjs.com/package/@opentelemetry/instrumentation-winston) — it auto-installs [`@opentelemetry/winston-transport`](https://www.npmjs.com/package/@opentelemetry/winston-transport), which forwards each winston record through the OpenTelemetry Logs SDK. Two `createLogger` options shape that pipeline: `flatten: true` is recommended for any OTEL setup, and `mapAuditLevelForOtel: true` when using the default level set (which includes `audit`).
+[`@opentelemetry/winston-transport`](https://www.npmjs.com/package/@opentelemetry/winston-transport) forwards each winston record through the OpenTelemetry Logs SDK. Add it yourself, or let [`@opentelemetry/instrumentation-winston`](https://www.npmjs.com/package/@opentelemetry/instrumentation-winston) add it to every logger. Two `createLogger` options shape the records it receives: `flatten`, chosen by transport line below, and `mapAuditLevelForOtel: true` when using the default level set (which includes `audit`).
 
-### Flattening nested metadata
+### Flattening for OpenTelemetry
 
-OTEL's log attribute model has historically been flat — the JS API only accepts strings, numbers, booleans, and homogeneous arrays of those as attribute values, so nested objects in winston metadata aren't valid attributes. `@opentelemetry/winston-transport` copies them onto the attribute bag as-is, and downstream handling varies by exporter and backend (some stringify, some drop, some partially walk).
+Most backends — Azure Log Analytics included — index only scalar attributes, so a nested value needs to arrive as a JSON string to be queryable. What else the record needs depends on the transport line:
 
-Complex attribute types are landing in the spec ([announced for OTLP 1.9](https://opentelemetry.io/blog/2025/complex-attribute-types/) in 2025) but support is still rolling out across SDKs, and the official guidance is to prefer flat attributes anyway since most backends — Azure Log Analytics included — don't index or query nested values.
+| `@opentelemetry/winston-transport` | Matching SDK line | What the transport does                                                                    | Use                                             |
+| ---------------------------------- | ----------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| before 0.29                        | ≤ 0.218           | Passes every value through as it is                                                        | `flatten: true`, or `jsonStringifyValuesFormat` |
+| 0.29 – 0.31                        | 0.219 – 0.221     | Records an `err`/`error` value as the record's exception; passes every other value through | `flatten: 'otel'`, or `otelAttributesFormat`    |
+| 0.32 and later                     | 0.222 and later   | As 0.29, and normalises object values into nested map attributes                           | `flatten: 'otel'`, or `otelAttributesFormat`    |
 
-Set `flatten: true` to serialise every top-level value on the log info to a JSON string, producing a flat `{ key: string }` shape that survives the OTEL pipeline cleanly:
+From 0.29 the transport gives the logs SDK an `err`/`error` value as the exception, and the SDK keeps only `name`, `message`, `stack` and a cause's message: they become `exception.type`, `exception.message`, `exception.stacktrace` and `error.cause.*`, and every other field of the error is dropped. Two things go wrong without help:
+
+- **`flatten: true`** turns the error into a JSON string first, and the SDK records the whole string as `exception.message`, with no `exception.type` or stack trace.
+- **No flattening** records the exception, but loses the rest of the error — an HTTP status, a provider's error body, the cause chain — and other object values arrive as nested maps.
+
+`flatten: 'otel'` keeps the error an object with only the fields the SDK reads, moves the rest of it to `errorDetail` as JSON, and serialises every other object value to a JSON string. Scalars are left alone, and a `Date` becomes its ISO string. A provider error logged as `logger.error('Chat failed', { error, request: { route: '/chat' } })` is exported as:
 
 ```ts
+{
+  'exception.type': 'ProviderError',
+  'exception.message': 'Request too large',
+  'exception.stacktrace': 'ProviderError: Request too large\n    at …',
+  'error.cause.type': 'Error',
+  'error.cause.message': 'body exceeds limit',
+  errorDetail: '{"statusCode":413,"data":{"error":{"code":"request_too_large"}},"cause":{…}}',
+  request: '{"route":"/chat"}',
+}
+```
+
+The SDK takes a truthy `code` over `name` as `exception.type`, so `code` goes to `errorDetail` unless the error has no `name`.
+
+#### Where to apply it
+
+`flatten` is a logger-level format, so it changes what every transport receives — the console included. When you construct the OpenTelemetry transport yourself, put the format on that transport instead and the console keeps its nested JSON:
+
+```ts
+import { OpenTelemetryTransportV3 } from '@opentelemetry/winston-transport'
+import { createLogger, otelAttributesFormat } from '@makerx/node-winston'
+
 const logger = createLogger({
-  flatten: true,
+  mapAuditLevelForOtel: true,
+  transports: [new OpenTelemetryTransportV3({ format: otelAttributesFormat() })],
 })
 ```
 
-Pair with `flattenReplacer` to customise the per-value `JSON.stringify` replacer.
+`@opentelemetry/instrumentation-winston` constructs its transport without a format, so with it the logger-level option is the only place to apply one:
+
+```ts
+const logger = createLogger({ flatten: 'otel', mapAuditLevelForOtel: true })
+```
+
+Pair either `flatten` mode with `flattenReplacer` to customise the `JSON.stringify` replacer for every value it serialises.
 
 ### Shipping the audit level via OpenTelemetry
 
@@ -264,15 +301,16 @@ The format rewrites the triple-beam `LEVEL` symbol from `audit` to `info` (so OT
 
 Every format used by `createLogger` is also exported for direct use with your own winston setup.
 
-| Format                      | Purpose                                                                                                                                                                                                                                                         |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serializeErrorFormat`      | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. A record that is itself an error, or holds one under `message`, is nested under `error`. |
-| `omitFormat`                | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                                                                                                             |
-| `omitNilFormat`             | Removes top-level `null` or `undefined` values.                                                                                                                                                                                                                 |
-| `redactFormat`              | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                                                                                                                   |
-| `jsonStringifyValuesFormat` | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`.                                                                                                                                    |
-| `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                                                                                                                  |
-| `mapAuditLevelForOtel`      | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration.                                                                                                    |
+| Format                      | Purpose                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serializeErrorFormat`      | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. A record that is itself an error, or holds one under `message`, is nested under `error`.                                                                           |
+| `omitFormat`                | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                                                                                                                                                                                       |
+| `omitNilFormat`             | Removes top-level `null` or `undefined` values.                                                                                                                                                                                                                                                                                           |
+| `redactFormat`              | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                                                                                                                                                                                             |
+| `otelAttributesFormat`      | Shapes a record into OpenTelemetry log attributes for `@opentelemetry/winston-transport` 0.29 and later: the error stays an object the transport records as the exception, the rest of it goes to `errorDetail`, and every other object value becomes a JSON string. Accepts an optional `replacer`. See [OpenTelemetry](#opentelemetry). |
+| `jsonStringifyValuesFormat` | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`.                                                                                                                                                                                                              |
+| `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                                                                                                                                                                                            |
+| `mapAuditLevelForOtel`      | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration.                                                                                                                                                                              |
 
 `redactFormat` paths accept plain keys (`email`, matched at every level), dot-notation paths (`user.email`), and `[*]` array wildcards to iterate every element of an array segment — for example `files[*].name`, `users[*].addresses[*].zip`, or `tags[*]` to redact each element of a primitive array.
 
