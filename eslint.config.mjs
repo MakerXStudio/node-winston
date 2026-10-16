@@ -34,4 +34,24 @@ export default [
       },
     },
   },
+  {
+    // The OpenTelemetry transport is an optional peer. Importing it, or `@opentelemetry/api-logs`, from
+    // the library would make it required, and a second `api-logs` copy in an app sends every log
+    // line to a no-op. Specs drive the real transport under npm aliases instead.
+    files: ['src/**/*.ts'],
+    ignores: ['src/**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@opentelemetry/*', 'otel-winston-transport-*'],
+              message: 'The library must not depend on OpenTelemetry packages. See the comment in eslint.config.mjs.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]

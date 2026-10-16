@@ -2,21 +2,21 @@
  * What a record looks like once it is an OpenTelemetry log record, through the real
  * `@opentelemetry/winston-transport` and the logs SDK — the row a backend stores.
  *
- * Three transport lines, installed side by side under npm aliases:
- * - 0.27: no exception handling; every attribute is passed through as it is.
- * - 0.31: lifts `err`/`error` off the record as the exception (from 0.29).
- * - 0.34: also normalises object attributes into nested maps, errors included (from 0.32).
+ * The supported transport line, installed side by side under npm aliases:
+ * - 0.29: the oldest release that lifts `err`/`error` off the record as the exception.
+ * - latest: also normalises object attributes into nested maps (from 0.32), and takes
+ *   `severityMapping` and `logSeverity` options (from 0.34).
  *
  * Each transport binds its logger when it is constructed, so the provider is registered first.
  */
-import { logs } from '@opentelemetry/api-logs'
+import { logs, SeverityNumber } from '@opentelemetry/api-logs'
 import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs'
-import { OpenTelemetryTransportV3 as Transport034 } from '@opentelemetry/winston-transport'
-import { OpenTelemetryTransportV3 as Transport027 } from 'otel-winston-transport-0.27'
-import { OpenTelemetryTransportV3 as Transport031 } from 'otel-winston-transport-0.31'
+import { OpenTelemetryTransportV3 as Transport029 } from 'otel-winston-transport-0.29'
+import { OpenTelemetryTransportV3 as TransportLatest } from 'otel-winston-transport-latest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type TransportStream from 'winston-transport'
-import { CallbackTransport, createLogger, type CreateLoggerOptions } from './index'
+import { CallbackTransport, createLogger, type CreateLoggerOptions, type Logger } from './index'
+import { jsonStringifyValuesFormat } from './json-stringify-values-format'
 import { otelAttributesFormat } from './otel-attributes-format'
 
 type TransportClass = new (options?: TransportStream.TransportStreamOptions) => TransportStream
@@ -42,65 +42,61 @@ class ProviderError extends Error {
 const failure = () => new ProviderError('Request too large', { cause: new Error('body exceeds limit') })
 const at = new Date('2026-01-02T03:04:05.000Z')
 
+/** An AI SDK `APICallError`: the prompt and the response headers are own properties. */
+const apiCallError = (attempt: number) =>
+  Object.assign(new Error(`attempt ${attempt} failed`), {
+    name: 'AI_APICallError',
+    statusCode: 429,
+    requestBodyValues: { messages: [{ role: 'user', content: 'the whole prompt' }] },
+    responseHeaders: { 'x-request-id': `req-${attempt}` },
+  })
+
+/** An AI SDK `RetryError`: every attempt under `errors`, and the last once more under `lastError`. */
+const retryError = () => {
+  const errors = [apiCallError(1), apiCallError(2)]
+  return Object.assign(new Error('Failed after 2 attempts'), { name: 'AI_RetryError', errors, lastError: errors[1] })
+}
+
 let sequence = 0
+
+/** Logs one line through a fresh logger and returns the log records it exported. */
+async function emitted(options: Partial<CreateLoggerOptions>, log: (logger: Logger, message: string) => void) {
+  const message = `line ${++sequence}`
+  const logger = createLogger({ consoleOptions: { silent: true }, ...options })
+  log(logger, message)
+  await new Promise((resolve) => setImmediate(resolve))
+  return exporter.getFinishedLogRecords().filter((record) => record.body === message)
+}
 
 /** Logs one error line through a fresh logger on `Transport` and returns its exported attributes. */
 async function exported(Transport: TransportClass, options: Partial<CreateLoggerOptions> = {}, transport?: TransportStream) {
-  const message = `line ${++sequence}`
-  const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport ?? new Transport()], ...options })
-  logger.error(message, { error: failure(), at, request: { route: '/chat', attempt: 2 } })
-  await new Promise((resolve) => setImmediate(resolve))
-  const records = exporter.getFinishedLogRecords().filter((record) => record.body === message)
+  const records = await emitted({ transports: [transport ?? new Transport()], ...options }, (logger, message) =>
+    logger.error(message, { error: failure(), at, request: { route: '/chat', attempt: 2 } }),
+  )
   expect(records).toHaveLength(1)
   return records[0].attributes as Record<string, unknown>
 }
 
 const isScalar = (value: unknown) => value === null || ['string', 'number', 'boolean'].includes(typeof value)
 
-describe('flatten: true', () => {
-  it('0.27 writes the error as one JSON attribute holding its message and status', async () => {
-    const attributes = await exported(Transport027, { flatten: true })
-    expect(JSON.parse(attributes.error as string)).toMatchObject({ message: 'Request too large', statusCode: 413 })
-    expect(attributes).not.toHaveProperty('exception.message')
-  })
+const lines: [string, TransportClass][] = [
+  ['0.29', Transport029],
+  ['latest', TransportLatest],
+]
 
-  it.each([
-    ['0.31', Transport031],
-    ['0.34', Transport034],
-  ])(
-    '%s records the whole error JSON as exception.message, which is why flatten: true is for transports before 0.29',
-    async (_, Transport) => {
-      const attributes = await exported(Transport, { flatten: true })
-      expect(String(attributes['exception.message']).startsWith('{')).toBe(true)
-      expect(attributes).not.toHaveProperty('exception.type')
-    },
-  )
-})
-
-describe('no flatten', () => {
-  it('0.34 records the exception but drops the rest of the error', async () => {
-    const attributes = await exported(Transport034)
-    expect(attributes['exception.message']).toBe('Request too large')
-    expect(JSON.stringify(attributes)).not.toContain('413')
-  })
-})
-
-describe.each([
-  ['0.31', Transport031],
-  ['0.34', Transport034],
-])("flatten: 'otel' on %s", (_, Transport) => {
+describe.each(lines)('otel: true on %s', (_, Transport) => {
   it('records the error as exception.type, exception.message and exception.stacktrace', async () => {
-    const attributes = await exported(Transport, { flatten: 'otel' })
+    const attributes = await exported(Transport, { otel: true })
     expect(attributes).toMatchObject({ 'exception.type': 'ProviderError', 'exception.message': 'Request too large' })
     expect(String(attributes['exception.stacktrace'])).toContain('Request too large')
   })
 
   it("records the error's cause as error.cause.message", async () => {
-    expect((await exported(Transport, { flatten: 'otel' }))['error.cause.message']).toBe('body exceeds limit')
+    expect((await exported(Transport, { otel: true }))['error.cause.message']).toBe('body exceeds limit')
   })
 
   it("keeps the error's status, provider data and cause chain under errorDetail", async () => {
-    const attributes = await exported(Transport, { flatten: 'otel' })
+    const attributes = await exported(Transport, { otel: true })
     expect(JSON.parse(attributes.errorDetail as string)).toMatchObject({
       statusCode: 413,
       data: { error: { code: 'request_too_large' } },
@@ -109,36 +105,118 @@ describe.each([
   })
 
   it('writes every attribute as a scalar, none of them [object Object]', async () => {
-    const attributes = await exported(Transport, { flatten: 'otel' })
+    const attributes = await exported(Transport, { otel: true })
     expect(Object.values(attributes).every(isScalar)).toBe(true)
     expect(Object.values(attributes)).not.toContain('[object Object]')
   })
 
   it('writes other objects as JSON strings and a Date as its ISO string', async () => {
-    const attributes = await exported(Transport, { flatten: 'otel' })
+    const attributes = await exported(Transport, { otel: true })
     expect(attributes.request).toBe('{"route":"/chat","attempt":2}')
     expect(attributes.at).toBe('2026-01-02T03:04:05.000Z')
   })
+
+  it('exports an audit record at INFO severity, with logLevel audit', async () => {
+    const records = await emitted({ otel: true, transports: [new Transport()] }, (logger, message) => logger.audit(message))
+    expect(records).toHaveLength(1)
+    expect(records[0].severityNumber).toBe(SeverityNumber.INFO)
+    expect(records[0].attributes.logLevel).toBe('audit')
+  })
+
+  it('redacts the prompt and compacts a failed retry in errorDetail', async () => {
+    const [record] = await emitted({ otel: true, transports: [new Transport()] }, (logger, message) =>
+      logger.error(message, { error: retryError() }),
+    )
+    expect(record.attributes['exception.type']).toBe('AI_RetryError')
+    const detail = JSON.parse(record.attributes.errorDetail as string) as { errors: Record<string, unknown>[] }
+    expect(detail).not.toHaveProperty('lastError')
+    expect(detail.errors).toHaveLength(2)
+    expect(detail.errors.map((attempt) => attempt.requestBodyValues)).toEqual(['<redacted>', '<redacted>'])
+    expect(detail.errors.some((attempt) => 'responseHeaders' in attempt)).toBe(false)
+    expect(JSON.stringify(record.attributes)).not.toContain('the whole prompt')
+  })
+
+  it('caps errorDetail at 8,192 characters', async () => {
+    const [record] = await emitted({ otel: true, transports: [new Transport()] }, (logger, message) =>
+      logger.error(message, { error: Object.assign(new Error('big'), { body: 'x'.repeat(20_000) }) }),
+    )
+    const detail = record.attributes.errorDetail as string
+    expect(detail).toHaveLength(8192)
+    expect(detail.endsWith('[Truncated]')).toBe(true)
+  })
+
+  // Upstream behaviour, pinned so a change to it is noticed: with no `err` or `error` on the record,
+  // the transport takes the first splat argument that looks like an exception — any object with a
+  // `name`, `code`, `message` or `stack` — as the record's exception.
+  it('records a metadata object with a name as the exception when there is no err or error', async () => {
+    const [record] = await emitted({ otel: true, transports: [new Transport()] }, (logger, message) =>
+      logger.info(message, { name: 'Alice' }),
+    )
+    expect(record.attributes['exception.type']).toBe('Alice')
+    expect(record.attributes.name).toBe('Alice')
+  })
 })
 
-describe('otelAttributesFormat on the transport', () => {
+describe.each(lines)('otelAttributesFormat on the transport on %s', (_, Transport) => {
   it('flattens what the OpenTelemetry transport receives and leaves other transports nested', async () => {
     const seen: Record<string, unknown>[] = []
     const sibling = new CallbackTransport(
       async ({ meta }) => void seen.push(meta),
       () => undefined,
     )
-    const message = `line ${++sequence}`
-    const logger = createLogger({
-      consoleOptions: { silent: true },
-      transports: [new Transport034({ format: otelAttributesFormat() }), sibling],
-    })
-    logger.error(message, { error: failure(), request: { route: '/chat' } })
-    await new Promise((resolve) => setImmediate(resolve))
-
-    const [record] = exporter.getFinishedLogRecords().filter((r) => r.body === message)
+    const [record] = await emitted({ transports: [new Transport({ format: otelAttributesFormat() }), sibling] }, (logger, message) =>
+      logger.error(message, { error: failure(), request: { route: '/chat' } }),
+    )
     expect(record.attributes).toMatchObject({ 'exception.type': 'ProviderError', request: '{"route":"/chat"}' })
     expect(seen[0].request).toEqual({ route: '/chat' })
     expect(seen[0].error).toMatchObject({ statusCode: 413 })
+  })
+
+  it('exports audit records at INFO severity from a transport set to level audit', async () => {
+    const transport = new Transport({ level: 'audit', format: otelAttributesFormat() })
+    const records = await emitted({ transports: [transport] }, (logger, message) => {
+      logger.audit(message)
+      logger.info(message)
+    })
+    expect(records).toHaveLength(1)
+    expect(records[0].severityNumber).toBe(SeverityNumber.INFO)
+    expect(records[0].attributes.logLevel).toBe('audit')
+  })
+
+  it('records the whole error JSON as exception.message with jsonStringifyValuesFormat, which is why it is not for 0.29 and later', async () => {
+    const attributes = await exported(Transport, {}, new Transport({ format: jsonStringifyValuesFormat() }))
+    expect(String(attributes['exception.message']).startsWith('{')).toBe(true)
+    expect(attributes).not.toHaveProperty('exception.type')
+  })
+})
+
+describe('without otel on latest', () => {
+  it('records the exception but drops the rest of the error', async () => {
+    const attributes = await exported(TransportLatest)
+    expect(attributes['exception.message']).toBe('Request too large')
+    expect(JSON.stringify(attributes)).not.toContain('413')
+  })
+})
+
+describe('transport severity options on latest', () => {
+  it('severityMapping keeps severityText audit when the format leaves the level alone', async () => {
+    const transport = new TransportLatest({
+      format: otelAttributesFormat({ mapAuditLevel: false }),
+      severityMapping: { audit: SeverityNumber.INFO },
+    })
+    const [record] = await emitted({ transports: [transport] }, (logger, message) => logger.audit(message))
+    expect(record.severityNumber).toBe(SeverityNumber.INFO)
+    expect(record.severityText).toBe('audit')
+    expect(record.attributes).not.toHaveProperty('logLevel')
+  })
+
+  it('logSeverity drops an audit record nothing maps', async () => {
+    const transport = new TransportLatest({ format: otelAttributesFormat({ mapAuditLevel: false }), logSeverity: SeverityNumber.INFO })
+    expect(await emitted({ transports: [transport] }, (logger, message) => logger.audit(message))).toHaveLength(0)
+  })
+
+  it('logSeverity keeps an audit record the format maps', async () => {
+    const transport = new TransportLatest({ format: otelAttributesFormat(), logSeverity: SeverityNumber.INFO })
+    expect(await emitted({ transports: [transport] }, (logger, message) => logger.audit(message))).toHaveLength(1)
   })
 })

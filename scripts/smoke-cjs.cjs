@@ -13,16 +13,30 @@ const expectedFns = [
   'createSerializableErrorReplacer',
   'serializableErrorReplacer',
   'serializeErrorFormat',
+  'compactErrorSerializer',
   'createLogger',
+  'otelAttributesFormat',
+  'mapAuditLevelForOtel',
   'jsonStringifyValuesFormat',
   'redactFormat',
   'omitFormat',
   'omitNilFormat',
   'prettyConsoleFormat',
+  'CallbackTransport',
 ]
 const missing = expectedFns.filter((name) => typeof main[name] !== 'function')
 if (missing.length > 0) {
   console.error(`CJS smoke: missing or non-function exports: ${missing.join(', ')}`)
+  process.exit(1)
+}
+
+if (!Array.isArray(main.defaultOtelRedactKeys)) {
+  console.error('CJS smoke: defaultOtelRedactKeys is not an array:', main.defaultOtelRedactKeys)
+  process.exit(1)
+}
+
+if (distPkg.peerDependenciesMeta?.['@opentelemetry/winston-transport']?.optional !== true) {
+  console.error('CJS smoke: dist/package.json does not mark @opentelemetry/winston-transport as an optional peer')
   process.exit(1)
 }
 
@@ -36,5 +50,8 @@ if (!out || out.message !== 'boom' || !out.cause || out.cause.message !== 'cause
 
 const logger = main.createLogger({ name: 'smoke', consoleOptions: { silent: true } })
 logger.info('cjs smoke ok')
+
+const otelLogger = main.createLogger({ otel: true, consoleOptions: { silent: true } })
+otelLogger.audit('cjs smoke otel ok', { error: err })
 
 console.log('CJS smoke test passed')
