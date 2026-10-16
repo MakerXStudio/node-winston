@@ -155,8 +155,7 @@ export interface CreateLoggerOptions {
   /**
    * Shapes every record for `@opentelemetry/winston-transport` 0.29 and later, by appending
    * {@link otelAttributesFormat} as the last logger-level format. `true` uses the format's
-   * defaults; an object is passed to it as its options, with `redactedValue` defaulting to this
-   * logger's.
+   * defaults; an object is passed to it as its options.
    *
    * Use this when the transport is added for you, as `WinstonInstrumentation` does. It changes what
    * every transport receives, the console included. When you construct the OpenTelemetry transport
@@ -175,6 +174,7 @@ export interface CreateLoggerOptions {
    * replacer (safety net for errors that slip through). Defaults to the library's
    * `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when
    * non-enumerable, walks own enumerable properties, and is safe against circular references.
+   * Build one with `createErrorSerializer` to leave properties out of every error.
    */
   errorSerializer?: ErrorSerializer
 
@@ -285,7 +285,7 @@ export function createLogger(options: CreateLoggerOptions): any {
   if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue, errorSerializer }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)
   // otel is applied last so all prior transformations are captured in the stringified values
-  if (otelOptions) loggerFormats.push(otelAttributesFormat({ redactedValue, ...otelOptions }))
+  if (otelOptions) loggerFormats.push(otelAttributesFormat(otelOptions))
 
   // create logger options using supplied options + transports; loggerOptions.levels (if any) overrides defaultLevels
   const loggerOptions: LoggerOptions = {

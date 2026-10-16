@@ -29,18 +29,18 @@ Formats are applied in two layers:
 
 ### Options
 
-| Option            | Type                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `consoleFormat`   | `'json' \| 'pretty'`                     | Output format for the Console transport. `json` (default) for deployed environments, `pretty` for colourised YAML during local development.                                                                                                                                                                                                                                                                                                                               |
-| `consoleOptions`  | `ConsoleTransportOptions`                | Options forwarded to the Console transport (e.g. `silent`, per-transport `level`). The `format` property is managed by this library.                                                                                                                                                                                                                                                                                                                                      |
-| `consoleFormats`  | `Format[]`                               | Extra formats appended to the Console transport's format chain, before the final `json`/`pretty` step. Applies to the Console transport only.                                                                                                                                                                                                                                                                                                                             |
-| `transports`      | `Transport[]`                            | Additional winston transports attached alongside the Console transport.                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `omitPaths`       | `string[]`                               | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                                                                                                                                |
-| `redactPaths`     | `string[]`                               | Dot-notation paths whose values are replaced with `redactedValue`. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                                                                                                                |
-| `redactedValue`   | `string`                                 | Replacement value used by `redactPaths`, and by `otel` redaction unless `otel.redactedValue` is set. Defaults to `'<redacted>'`.                                                                                                                                                                                                                                                                                                                                          |
-| `otel`            | `boolean \| OtelAttributesFormatOptions` | Shapes every record for `@opentelemetry/winston-transport` 0.29 and later, as the last logger-level format. `true` uses the defaults of `otelAttributesFormat`; an object is passed to it as its options. Use it when `@opentelemetry/instrumentation-winston` adds the transport; otherwise put the format on the transport. See [OpenTelemetry](#opentelemetry).                                                                                                        |
-| `errorSerializer` | `ErrorSerializer`                        | Custom serializer applied to every `Error` instance at the logger level (via `serializeErrorFormat`) and as the Console transport's `format.json` replacer. Defaults to the library's `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when non-enumerable, walks own enumerable properties, and is safe against circular references. Pass `compactErrorSerializer` to leave out what makes a failed AI SDK retry too large to log. |
-| `loggerOptions`   | `LoggerOptions`                          | Winston logger options (e.g. `level`, `defaultMeta`). A `format` supplied here is appended after the library's logger-level formats but still runs before `otel` when enabled.                                                                                                                                                                                                                                                                                            |
+| Option            | Type                                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `consoleFormat`   | `'json' \| 'pretty'`                     | Output format for the Console transport. `json` (default) for deployed environments, `pretty` for colourised YAML during local development.                                                                                                                                                                                                                                                                                                                |
+| `consoleOptions`  | `ConsoleTransportOptions`                | Options forwarded to the Console transport (e.g. `silent`, per-transport `level`). The `format` property is managed by this library.                                                                                                                                                                                                                                                                                                                       |
+| `consoleFormats`  | `Format[]`                               | Extra formats appended to the Console transport's format chain, before the final `json`/`pretty` step. Applies to the Console transport only.                                                                                                                                                                                                                                                                                                              |
+| `transports`      | `Transport[]`                            | Additional winston transports attached alongside the Console transport.                                                                                                                                                                                                                                                                                                                                                                                    |
+| `omitPaths`       | `string[]`                               | Dot-notation paths to remove from every log entry. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                                                                                                                 |
+| `redactPaths`     | `string[]`                               | Dot-notation paths whose values are replaced with `redactedValue`. A plain key matches at every depth, inside serialized errors too. Applied at the logger level, so affects all transports.                                                                                                                                                                                                                                                               |
+| `redactedValue`   | `string`                                 | Replacement value used by `redactPaths`. Defaults to `'<redacted>'`.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `otel`            | `boolean \| OtelAttributesFormatOptions` | Shapes every record for `@opentelemetry/winston-transport` 0.29 and later, as the last logger-level format. `true` uses the defaults of `otelAttributesFormat`; an object is passed to it as its options. Use it when `@opentelemetry/instrumentation-winston` adds the transport; otherwise put the format on the transport. See [OpenTelemetry](#opentelemetry).                                                                                         |
+| `errorSerializer` | `ErrorSerializer`                        | Custom serializer applied to every `Error` instance at the logger level (via `serializeErrorFormat`) and as the Console transport's `format.json` replacer. Defaults to the library's `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when non-enumerable, walks own enumerable properties, and is safe against circular references. Build one with `createErrorSerializer` to leave properties out of every error. |
+| `loggerOptions`   | `LoggerOptions`                          | Winston logger options (e.g. `level`, `defaultMeta`). A `format` supplied here is appended after the library's logger-level formats but still runs before `otel` when enabled.                                                                                                                                                                                                                                                                             |
 
 ### Log levels
 
@@ -251,7 +251,7 @@ const logger = createLogger({
 const logger = createLogger({ otel: true })
 ```
 
-`otel` also takes the format's [options](#options-1), for example `otel: { redactKeys: [...defaultOtelRedactKeys, 'prompt'] }`.
+`otel` also takes the format's [options](#options-1), for example `otel: { maxAttributeLength: 8192 }`.
 
 ### Supported transport lines
 
@@ -272,7 +272,7 @@ From 0.29 the transport gives the logs SDK an `err`/`error` value as the excepti
 - The error stays an object with only the fields the SDK reads. The rest of it, such as an HTTP status, a provider's error body or the cause chain, goes to `errorDetail` as JSON.
 - Every other object value becomes a JSON string. Scalars are left alone, and a `Date` becomes its ISO string.
 - Every record gets `logLevel`, and an `audit` record is exported at `info` severity. See [Audit severity](#audit-severity).
-- `requestBodyValues` is redacted, a failed AI SDK retry is compacted, and every string the format writes is capped at 8,192 characters. See [Errors from the AI SDK](#errors-from-the-ai-sdk).
+- Strings it writes can be capped at a backend's limit with `maxAttributeLength`. See [Keeping records small and private](#keeping-records-small-and-private).
 
 A provider error logged as `logger.error('Chat failed', { error, request: { route: '/chat' } })` is exported as:
 
@@ -298,16 +298,11 @@ Without the format, two things go wrong:
 
 ### Options
 
-| Option               | Default                 | Description                                                                                                                                                            |
-| -------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mapAuditLevel`      | `true`                  | Exports an `audit` record at `info` severity and copies every record's level onto `logLevel`. See [Audit severity](#audit-severity).                                   |
-| `redactKeys`         | `defaultOtelRedactKeys` | Keys whose values are replaced with `redactedValue`, matched at every depth. The list replaces the default: spread `defaultOtelRedactKeys` to add a key, or pass `[]`. |
-| `redactedValue`      | `'<redacted>'`          | Replacement value for `redactKeys`. With `otel`, defaults to the logger's `redactedValue`.                                                                             |
-| `compactErrors`      | `true`                  | Leaves `responseHeaders` out of every error, and `lastError` out of an error whose `errors` already holds it.                                                          |
-| `maxAttributeLength` | `8192`                  | The longest string the format writes. A longer one is cut short and ends in `[Truncated]`. `Infinity` writes every string whole.                                       |
-| `replacer`           | none                    | `JSON.stringify` replacer for every value the format stringifies, `errorDetail` included. Runs after redaction and compaction.                                         |
-
-`defaultOtelRedactKeys` is `['requestBodyValues']`.
+| Option               | Default | Description                                                                                                                                                                                         |
+| -------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mapAuditLevel`      | `true`  | Exports an `audit` record at `info` severity and copies every record's level onto `logLevel`. See [Audit severity](#audit-severity).                                                                |
+| `maxAttributeLength` | none    | The longest string the format writes. A longer one is cut short and ends in `[Truncated]`. By default every string is written whole. Strings the record already held are never cut.                 |
+| `replacer`           | none    | `JSON.stringify` replacer for every value the format stringifies, `errorDetail` included. It is called with the object holding the value as `this`, so it can leave a property out by its siblings. |
 
 ### Audit severity
 
@@ -333,26 +328,33 @@ new OpenTelemetryTransportV3({
 
 `WinstonInstrumentation` takes the same `severityMapping` option: pair it with `otel: { mapAuditLevel: false }`. Do not turn the mapping off without a `severityMapping` when you set `logSeverity`, because an `audit` record with no severity is dropped.
 
-### Errors from the AI SDK
+### Keeping records small and private
 
-An AI SDK `APICallError` carries the whole request as `requestBodyValues`: the prompt and everything it was built from. A `RetryError` holds every attempt under `errors` and the last one again under `lastError`, each with its response headers. That overruns the 8,192-character limit of an App Insights custom dimension, which App Insights then cuts short so it no longer parses as JSON.
+The format writes what the record holds. Three generic options decide what that is, whatever library an error comes from:
 
-So by default the format:
+- **`redactPaths`** replaces values on every record. A plain key matches at every depth, inside serialized errors too, so it reaches a property an error carries.
+- **`createErrorSerializer`** builds an `errorSerializer` that leaves properties out of every error with `omit`, and with `dedupe` writes an object two properties share only once. See [Error serialization](#error-serialization).
+- **`maxAttributeLength`** cuts any string the format writes at a backend's limit, and ends it in `[Truncated]` so the cut is visible. The logs SDK's own `attributeValueLengthLimit` cuts silently, which leaves a JSON value that no longer parses.
 
-- replaces `requestBodyValues` with `'<redacted>'`, at every depth
-- leaves `responseHeaders` out of every error, and `lastError` out of an error whose `errors` already holds it
-- cuts any string it writes that is longer than 8,192 characters, ending it in `[Truncated]` so the cut is visible
+`redactPaths` and `errorSerializer` shape what every transport receives, the console included. To shape only the OpenTelemetry output, give that transport its own chain, such as `format.combine(redactFormat({ paths }), otelAttributesFormat({ replacer }))`.
 
-These defaults apply to OpenTelemetry output only. To apply them to the console and every other transport as well:
+#### Example: AI SDK errors in App Insights
+
+The Vercel AI SDK's `APICallError` carries the whole request body as `requestBodyValues`, the prompt included, and the provider's response as `responseHeaders`, `responseBody` and `data`. Its `RetryError` holds every attempt under `errors`, and the last attempt again under `lastError`. A failed retry can overrun the 8,192-character limit of an App Insights custom dimension, which App Insights then cuts short so it no longer parses as JSON.
 
 ```ts
-import { compactErrorSerializer, createLogger } from '@makerx/node-winston'
+import { createErrorSerializer, createLogger } from '@makerx/node-winston'
 
 const logger = createLogger({
+  otel: { maxAttributeLength: 8192 },
   redactPaths: ['requestBodyValues'],
-  errorSerializer: compactErrorSerializer,
+  errorSerializer: createErrorSerializer({
+    omit: (key, error) => key === 'responseHeaders' || (key === 'lastError' && 'errors' in error),
+  }),
 })
 ```
+
+When you construct the transport yourself, leave out `otel` and pass the cap to its format instead: `otelAttributesFormat({ maxAttributeLength: 8192 })`. `dedupe: true` is an alternative to the `lastError` rule: the last attempt is written in full under `errors`, and `lastError` as `'[Duplicate]'`.
 
 ### Exceptions found in metadata
 
@@ -362,16 +364,16 @@ With no `err` or `error` on a record, the transport takes the first metadata obj
 
 Every format used by `createLogger` is also exported for direct use with your own winston setup.
 
-| Format                      | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serializeErrorFormat`      | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. A record that is itself an error, or holds one under `message`, is nested under `error`.                                                                                                                                                                                     |
-| `omitFormat`                | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                                                                                                                                                                                                                                                                                                 |
-| `omitNilFormat`             | Removes top-level `null` or `undefined` values.                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `redactFormat`              | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                                                                                                                                                                                                                                                                                                       |
-| `otelAttributesFormat`      | Shapes a record into OpenTelemetry log attributes for `@opentelemetry/winston-transport` 0.29 and later: the error stays an object the transport records as the exception, the rest of it goes to `errorDetail`, and every other object value becomes a JSON string. By default it also exports `audit` at `info` severity, redacts `requestBodyValues`, compacts a failed AI SDK retry and caps long strings. See [OpenTelemetry](#opentelemetry). |
-| `jsonStringifyValuesFormat` | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`. For a sink other than the OpenTelemetry transport; from transport 0.29 use `otelAttributesFormat`.                                                                                                                                                                                                                     |
-| `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                                                                                                                                                                                                                                                                                                      |
-| `mapAuditLevelForOtel`      | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration. `otelAttributesFormat` already does this; use it in a chain you build yourself.                                                                                                                                                                                                        |
+| Format                      | Purpose                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serializeErrorFormat`      | Walks the log info (including nested objects and arrays) and replaces `Error` instances with plain objects that include the normally non-enumerable `message`/`stack`. A record that is itself an error, or holds one under `message`, is nested under `error`.                                                                                                  |
+| `omitFormat`                | Removes fields by dot-notation path via [es-toolkit's compat `omit`](https://es-toolkit.dev/reference/compat/object/omit.html) (lodash-compatible).                                                                                                                                                                                                              |
+| `omitNilFormat`             | Removes top-level `null` or `undefined` values.                                                                                                                                                                                                                                                                                                                  |
+| `redactFormat`              | Recursively replaces values at the given paths with `redactedValue` (default `'<redacted>'`).                                                                                                                                                                                                                                                                    |
+| `otelAttributesFormat`      | Shapes a record into OpenTelemetry log attributes for `@opentelemetry/winston-transport` 0.29 and later: the error stays an object the transport records as the exception, the rest of it goes to `errorDetail`, and every other object value becomes a JSON string. By default it also exports `audit` at `info` severity. See [OpenTelemetry](#opentelemetry). |
+| `jsonStringifyValuesFormat` | Serialises every top-level value to a JSON string, producing a flat `{ key: string }` shape. Accepts an optional `replacer`. For a sink other than the OpenTelemetry transport; from transport 0.29 use `otelAttributesFormat`.                                                                                                                                  |
+| `prettyConsoleFormat`       | Applies `colorize` and `timestamp`, then renders logs as coloured YAML using [`yamlify-object`](https://www.npmjs.com/package/yamlify-object).                                                                                                                                                                                                                   |
+| `mapAuditLevelForOtel`      | Rewrites the triple-beam `LEVEL` symbol from `audit` to `info` and copies the original onto `logLevel` so custom levels survive OTEL's severity enumeration. `otelAttributesFormat` already does this; use it in a chain you build yourself.                                                                                                                     |
 
 `redactFormat` paths accept plain keys (`email`, matched at every level), dot-notation paths (`user.email`), and `[*]` array wildcards to iterate every element of an array segment — for example `files[*].name`, `users[*].addresses[*].zip`, or `tags[*]` to redact each element of a primitive array.
 
@@ -452,7 +454,18 @@ const logger = createLogger({
 })
 ```
 
-`compactErrorSerializer` is a ready-made serializer: `serializeError` without `responseHeaders` on any error, and without `lastError` on an error whose `errors` already holds it. Pass it as `errorSerializer` to keep a failed AI SDK retry small on every transport. See [Errors from the AI SDK](#errors-from-the-ai-sdk).
+`createErrorSerializer` builds a serializer that works like `serializeError`, with two options:
+
+- **`omit`** leaves a property out of every error the serializer reaches: the error itself, its `cause`, each entry of its `errors`, and any error held in a property. It is given the property name and the error that holds it, so a rule can depend on the error's other properties. It is never asked about a plain object.
+- **`dedupe`** writes an object two properties of one error share only once, and every later occurrence as `'[Duplicate]'`. The first property in key order keeps the object.
+
+```ts
+import { createErrorSerializer, createLogger } from '@makerx/node-winston'
+
+const logger = createLogger({
+  errorSerializer: createErrorSerializer({ omit: (key) => key === 'headers', dedupe: true }),
+})
+```
 
 #### `DOMException`
 
@@ -487,25 +500,22 @@ Breaking changes:
 
 - **`flatten`, `flattenReplacer` and `mapAuditLevelForOtel` are removed from `createLogger`.** They are type errors, and `createLogger` throws if one is passed, so config-built options cannot silently fall back to nested output. Replace them as follows:
 
-| 2.x                                                                          | 3.0                                                                                                                                              |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `flatten: 'otel', mapAuditLevelForOtel: true`                                | `otel: true`                                                                                                                                     |
-| `flattenReplacer: r` with `flatten: 'otel'`                                  | `otel: { replacer: r }`                                                                                                                          |
-| `otelAttributesFormat()` on the transport, plus `mapAuditLevelForOtel: true` | `otelAttributesFormat()` on the transport alone. A transport set to `level: 'audit'` is now allowed.                                             |
-| `flatten: true`, or `jsonStringifyValuesFormat()` on a transport before 0.29 | Move the transport and the SDK to 0.29 or later, then use `otelAttributesFormat()` or `otel`. If you cannot move yet, stay on 2.x.               |
-| An `errorSerializer` that drops `responseHeaders` and `lastError`            | Nothing for OpenTelemetry output, which now does it by default. To keep it on the console too, use `errorSerializer: compactErrorSerializer`.    |
-| `redactPaths: ['requestBodyValues', …]`                                      | Nothing for OpenTelemetry output, which now redacts it by default. **Keep it** in `redactPaths` if the console must not carry the prompt either. |
+| 2.x                                                                                      | 3.0                                                                                                                                  |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `flatten: 'otel', mapAuditLevelForOtel: true`                                            | `otel: true`                                                                                                                         |
+| `flattenReplacer: r` with `flatten: 'otel'`                                              | `otel: { replacer: r }`                                                                                                              |
+| `otelAttributesFormat()` on the transport, plus `mapAuditLevelForOtel: true`             | `otelAttributesFormat()` on the transport alone. A transport set to `level: 'audit'` is now allowed.                                 |
+| `flatten: true`, or `jsonStringifyValuesFormat()` on a transport before 0.29             | Move the transport and the SDK to 0.29 or later, then use `otelAttributesFormat()` or `otel`. If you cannot move yet, stay on 2.x.   |
+| A hand-written `errorSerializer` that walks `serializeError`'s output to drop properties | `createErrorSerializer({ omit })`, with the rule as the predicate. See [the AI SDK example](#example-ai-sdk-errors-in-app-insights). |
 
 - **`@opentelemetry/winston-transport` is an optional peer dependency at `>=0.29`.** npm 7 and later refuse to install alongside an older transport; pnpm and Yarn warn. Consumers that do not ship logs through OpenTelemetry are unaffected.
 - **The audit mapping runs last.** With `otel`, a `loggerOptions.format` now sees `LEVEL: 'audit'`; in 2.x it saw `info`.
-- **OpenTelemetry output changes shape for anyone who logs these keys on purpose.** `requestBodyValues` is redacted, `responseHeaders` and a repeated `lastError` are left out of errors, and strings the format writes are capped at 8,192 characters. Each has an option to turn it off: see [Options](#options-1).
 - **A `Date` under `otel` is its ISO string, unquoted.** `flatten: true` wrote it as a quoted JSON string.
 
 New functionality:
 
-- `otelAttributesFormat` takes `mapAuditLevel`, `redactKeys`, `redactedValue`, `compactErrors`, `maxAttributeLength` and `replacer` options.
-- `compactErrorSerializer` compacts a failed AI SDK retry on every transport.
-- `defaultOtelRedactKeys` lists the keys the format redacts by default.
+- `otelAttributesFormat` takes `mapAuditLevel` and `maxAttributeLength` options, beside its `replacer`.
+- `createErrorSerializer` builds an error serializer that can leave properties out of every error, or write a shared object once.
 
 ## Migrating from v1
 

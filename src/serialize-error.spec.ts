@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { compactErrorSerializer, createSerializableErrorReplacer, serializableErrorReplacer, serializeError } from './serialize-error'
+import { createErrorSerializer, createSerializableErrorReplacer, serializableErrorReplacer, serializeError } from './serialize-error'
 
 describe('serializeError', () => {
   it('message and stack are not enumerable (and not serialized) by default', () => {
@@ -212,57 +212,98 @@ describe('createSerializableErrorReplacer', () => {
   })
 })
 
-describe('compactErrorSerializer', () => {
-  /** An AI SDK `APICallError`: its response headers are own properties. */
-  const apiCallError = (attempt: number) =>
-    Object.assign(new Error(`attempt ${attempt} failed`), {
-      name: 'AI_APICallError',
-      statusCode: 429,
-      responseHeaders: { 'x-request-id': `req-${attempt}` },
-      responseBody: 'rate limited',
-    })
+describe('createErrorSerializer', () => {
+  /** An error with response headers as an own property, as an HTTP client's error might carry. */
+  const httpError = (attempt: number) =>
+    Object.assign(new Error(`attempt ${attempt} failed`), { statusCode: 429, headers: { 'x-request-id': `req-${attempt}` } })
 
-  /** An AI SDK `RetryError`: every attempt under `errors`, and the last once more under `lastError`. */
+  /** An error holding each attempt under `attempts`, and the latest one again under `latest`. */
   const retryError = () => {
-    const errors = [apiCallError(1), apiCallError(2)]
-    return Object.assign(new Error('Failed after 2 attempts'), { name: 'AI_RetryError', errors, lastError: errors[1] })
+    const attempts = [httpError(1), httpError(2)]
+    return Object.assign(new Error('failed after 2 attempts'), { attempts, latest: attempts[1] })
   }
 
-  it('drops responseHeaders from every error and lastError beside errors', () => {
-    const out = compactErrorSerializer(retryError()) as { errors: Record<string, unknown>[] }
-    expect(out).not.toHaveProperty('lastError')
-    expect(out.errors).toHaveLength(2)
-    expect(out.errors.every((attempt) => !('responseHeaders' in attempt))).toBe(true)
-    expect(out.errors[1]).toMatchObject({ name: 'AI_APICallError', statusCode: 429, responseBody: 'rate limited' })
-  })
-
-  it('drops responseHeaders from a cause too', () => {
-    const out = compactErrorSerializer(new Error('wrapped', { cause: apiCallError(1) })) as { cause: Record<string, unknown> }
-    expect(out.cause).toMatchObject({ statusCode: 429 })
-    expect(out.cause).not.toHaveProperty('responseHeaders')
-  })
-
-  it('keeps lastError when there is no errors list', () => {
-    const error = Object.assign(new Error('x'), { lastError: apiCallError(1) })
-    expect(compactErrorSerializer(error)).toHaveProperty('lastError')
-  })
-
-  it('writes everything else as serializeError does', () => {
+  it('with no options, writes what serializeError writes', () => {
     const error = Object.assign(new Error('plain'), { code: 'E_X', detail: { a: [1, 2] } })
-    expect(compactErrorSerializer(error)).toEqual(serializeError(error))
+    expect(createErrorSerializer()(error)).toEqual(serializeError(error))
   })
 
-  it('compacts what a transport receives when passed to createLogger as errorSerializer', async () => {
+  it('omit leaves a property out of the error and of every error inside it', () => {
+    const serializer = createErrorSerializer({ omit: (key) => key === 'headers' })
+    const out = serializer(new Error('wrapped', { cause: retryError() })) as { cause: { attempts: object[]; latest: object } }
+    expect(out.cause.attempts).toHaveLength(2)
+    expect(out.cause.attempts.every((attempt) => !('headers' in attempt))).toBe(true)
+    expect(out.cause.latest).not.toHaveProperty('headers')
+    expect(out.cause.attempts[0]).toMatchObject({ message: 'attempt 1 failed', statusCode: 429 })
+  })
+
+  it('omit is given the error, so it can decide by its other properties', () => {
+    const serializer = createErrorSerializer({ omit: (key, error) => key === 'latest' && 'attempts' in error })
+    expect(serializer(retryError())).not.toHaveProperty('latest')
+    expect(serializer(Object.assign(new Error('x'), { latest: httpError(1) }))).toHaveProperty('latest')
+  })
+
+  it('omit can leave out a well-known property', () => {
+    expect(createErrorSerializer({ omit: (key) => key === 'stack' })(new Error('x'))).not.toHaveProperty('stack')
+  })
+
+  it('omit is never asked about a plain object', () => {
+    const asked: string[] = []
+    const serializer = createErrorSerializer({
+      omit: (key) => {
+        asked.push(key)
+        return false
+      },
+    })
+    serializer(Object.assign(new Error('x'), { context: { headers: {} } }))
+    expect(asked).not.toContain('headers')
+    expect(asked).toContain('context')
+  })
+
+  it('omit that throws keeps the property', () => {
+    const serializer = createErrorSerializer({
+      omit: () => {
+        throw new Error('bad predicate')
+      },
+    })
+    expect(serializer(new Error('x'))).toMatchObject({ name: 'Error', message: 'x' })
+  })
+
+  it('dedupe writes a shared object once, and every later occurrence as [Duplicate]', () => {
+    const out = createErrorSerializer({ dedupe: true })(retryError()) as { attempts: object[]; latest: unknown }
+    expect(out.attempts[1]).toMatchObject({ message: 'attempt 2 failed' })
+    expect(out.latest).toBe('[Duplicate]')
+  })
+
+  it('dedupe still writes a Date in full each time, and a cycle as [Circular]', () => {
+    const at = new Date('2026-01-02T03:04:05.000Z')
+    const error = Object.assign(new Error('x'), { first: at, second: at })
+    Object.assign(error, { self: error })
+    const out = createErrorSerializer({ dedupe: true })(error)
+    expect(out).toMatchObject({ first: '2026-01-02T03:04:05.000Z', second: '2026-01-02T03:04:05.000Z', self: '[Circular]' })
+  })
+
+  it('without dedupe, writes a shared object every time', () => {
+    const out = createErrorSerializer()(retryError()) as { latest: unknown }
+    expect(out.latest).toMatchObject({ message: 'attempt 2 failed' })
+  })
+
+  it('shapes what a transport receives when passed to createLogger as errorSerializer', async () => {
     const { CallbackTransport, createLogger } = await import('./index')
     const received: Record<string, unknown>[] = []
     const transport = new CallbackTransport(
       async ({ meta }) => void received.push(meta),
       () => undefined,
     )
-    const logger = createLogger({ consoleOptions: { silent: true }, errorSerializer: compactErrorSerializer, transports: [transport] })
-    logger.error('chat failed', { error: retryError() })
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      errorSerializer: createErrorSerializer({ omit: (key) => key === 'headers', dedupe: true }),
+      transports: [transport],
+    })
+    logger.error('request failed', { error: retryError() })
     await transport.close!()
-    expect(received[0].error).not.toHaveProperty('lastError')
-    expect((received[0].error as { errors: object[] }).errors[0]).not.toHaveProperty('responseHeaders')
+    const error = received[0].error as { attempts: object[]; latest: unknown }
+    expect(error.attempts[0]).not.toHaveProperty('headers')
+    expect(error.latest).toBe('[Duplicate]')
   })
 })

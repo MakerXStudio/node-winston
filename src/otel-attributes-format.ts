@@ -1,30 +1,18 @@
 import { format } from 'winston'
 import { applyAuditLevelMapping } from './audit-level'
-import { isCompactedErrorKey } from './compacted-error-keys'
 import { serializeError } from './serialize-error'
 import { serializesItself } from './serializes-itself'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Replacer = (this: any, key: string, value: any) => any
 
-/**
- * Keys `otelAttributesFormat` redacts by default, wherever they appear in a record.
- *
- * `requestBodyValues` is the whole request an AI SDK `APICallError` carries as an own property: the
- * prompt, and everything the prompt was built from.
- */
-export const defaultOtelRedactKeys: readonly string[] = Object.freeze(['requestBodyValues'])
-
-/** The longest string attribute an App Insights custom dimension keeps. */
-const DEFAULT_MAX_ATTRIBUTE_LENGTH = 8192
-
 const TRUNCATED = '[Truncated]'
 
 export interface OtelAttributesFormatOptions {
   /**
    * `JSON.stringify` replacer applied to every value this format stringifies, `errorDetail`
-   * included. It runs after redaction and compaction, so it sees `'<redacted>'` in place of a
-   * redacted value.
+   * included. It is called with the object holding the value as `this`, so it can decide on a
+   * property by its siblings. Return `undefined` to leave the property out.
    */
   replacer?: Replacer
 
@@ -36,45 +24,27 @@ export interface OtelAttributesFormatOptions {
   mapAuditLevel?: boolean
 
   /**
-   * Keys whose values are replaced with `redactedValue`, matched at every depth. Defaults to
-   * {@link defaultOtelRedactKeys}. The list replaces the default: spread it to add a key, or pass `[]`
-   * to redact nothing.
-   */
-  redactKeys?: readonly string[]
-
-  /** Replacement value for `redactKeys`. Defaults to `'<redacted>'`. */
-  redactedValue?: string
-
-  /**
-   * Leaves `responseHeaders` out of every error, and `lastError` out of an error whose `errors`
-   * already holds it. Defaults to `true`. These are what make a failed AI SDK retry overrun an App
-   * Insights custom dimension.
-   */
-  compactErrors?: boolean
-
-  /**
-   * The longest string this format writes. A longer one is cut short and ends in `[Truncated]`.
-   * Defaults to 8,192, the App Insights custom-dimension limit. Pass `Infinity` to write every
-   * string whole. Values that were already strings are never cut.
+   * The longest string this format writes. A longer one is cut short and ends in `[Truncated]`, so
+   * a backend's own limit never cuts it silently. By default every string is written whole. Values
+   * that were already strings are never cut.
+   *
+   * @example App Insights keeps 8,192 characters of a custom dimension
+   * ```ts
+   * otelAttributesFormat({ maxAttributeLength: 8192 })
+   * ```
    */
   maxAttributeLength?: number
 }
 
 interface Settings {
   replacer: Replacer | undefined
-  redactKeys: ReadonlySet<string>
-  redactedValue: string
-  compactErrors: boolean
   maxAttributeLength: number
   mapAuditLevel: boolean
 }
 
 const resolveSettings = (opts: OtelAttributesFormatOptions): Settings => ({
   replacer: opts.replacer,
-  redactKeys: new Set(opts.redactKeys ?? defaultOtelRedactKeys),
-  redactedValue: opts.redactedValue ?? '<redacted>',
-  compactErrors: opts.compactErrors ?? true,
-  maxAttributeLength: opts.maxAttributeLength ?? DEFAULT_MAX_ATTRIBUTE_LENGTH,
+  maxAttributeLength: opts.maxAttributeLength ?? Infinity,
   mapAuditLevel: opts.mapAuditLevel ?? true,
 })
 
@@ -117,8 +87,6 @@ const isDescribableCause = (cause: unknown): boolean =>
       typeof cause.code === 'string' ||
       typeof cause.code === 'number'))
 
-const isRedacted = (settings: Settings, key: string, value: unknown): boolean => value != null && settings.redactKeys.has(key)
-
 /** Cuts a string to `max`, ending in `[Truncated]`, without splitting a surrogate pair. */
 const cap = (text: string, max: number): string => {
   if (text.length <= max) return text
@@ -128,20 +96,11 @@ const cap = (text: string, max: number): string => {
   return text.slice(0, end) + TRUNCATED
 }
 
-/**
- * Plain JSON for any value: compacted keys left out, redacted keys replaced, errors serialized,
- * BigInts written as `<n>n`, the result capped, and never a throw out of the log call.
- *
- * A JSON replacer is called with the holding object as `this`, so a `lastError` is judged against
- * its own siblings without the value being cloned or changed.
- */
+/** Plain JSON for any value: errors serialized, BigInts written as `<n>n`, the result capped, and never a throw out of the log call. */
 const stringify = (value: unknown, settings: Settings): string => {
   const { replacer } = settings
   const plain = function (this: unknown, key: string, entry: unknown): unknown {
-    let converted: unknown
-    if (key !== '' && settings.compactErrors && isCompactedErrorKey(this, key)) return undefined
-    if (key !== '' && isRedacted(settings, key, entry)) converted = settings.redactedValue
-    else converted = entry instanceof Error ? serializeError(entry) : typeof entry === 'bigint' ? `${entry}n` : entry
+    const converted = entry instanceof Error ? serializeError(entry) : typeof entry === 'bigint' ? `${entry}n` : entry
     return replacer ? (replacer.call(this, key, converted) as unknown) : converted
   }
   let json: string
@@ -179,10 +138,8 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
   const exception: Record<string, unknown> = {}
   const detail: Record<string, unknown> = {}
   for (const [field, value] of Object.entries(error)) {
-    if (settings.compactErrors && isCompactedErrorKey(error, field)) continue
-    const written = isRedacted(settings, field, value) ? settings.redactedValue : value
-    if (EXCEPTION_FIELDS.has(field)) exception[field] = written
-    else detail[field] = written
+    if (EXCEPTION_FIELDS.has(field)) exception[field] = value
+    else detail[field] = value
   }
   if (isDescribableCause(error.cause)) exception.cause = error.cause
   if (exception.name == null && error.code != null) {
@@ -211,13 +168,9 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
  * turn them into nested map attributes, which most backends — Azure Log Analytics included — do not
  * index. Scalars are left alone. A `Date` becomes its ISO string, unquoted.
  *
- * By default it also:
- * - exports an `audit` record at `info` severity, with every record's level on `logLevel`
- * - redacts {@link defaultOtelRedactKeys} at every depth
- * - leaves out what makes a failed AI SDK retry too large (`responseHeaders`, a repeated `lastError`)
- * - caps every string it writes at 8,192 characters, ending in `[Truncated]`
- *
- * See {@link OtelAttributesFormatOptions} to change any of these.
+ * OpenTelemetry has no severity for winston's `audit` level, so by default the format exports an
+ * `audit` record at `info` severity, with every record's level on `logLevel`. See
+ * {@link OtelAttributesFormatOptions} to turn that off, cap the strings it writes, or pass a replacer.
  *
  * Put it on the OpenTelemetry transport to keep other transports' output nested, or use
  * `createLogger({ otel: true })` when the transport is added for you, as `WinstonInstrumentation`
@@ -234,10 +187,6 @@ export const otelAttributesFormat = format((info, opts) => {
   const lifted = EXCEPTION_KEYS.find((key) => isExceptionCandidate(record[key]))
   for (const key of Object.keys(record)) {
     const value = record[key]
-    if (isRedacted(settings, key, value)) {
-      record[key] = settings.redactedValue
-      continue
-    }
     if (!isObject(value)) continue
     if (key === lifted) splitException(record, key, value instanceof Error ? serializeError(value) : value, settings)
     else record[key] = flatValue(value, settings)

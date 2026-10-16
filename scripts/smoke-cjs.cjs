@@ -13,7 +13,7 @@ const expectedFns = [
   'createSerializableErrorReplacer',
   'serializableErrorReplacer',
   'serializeErrorFormat',
-  'compactErrorSerializer',
+  'createErrorSerializer',
   'createLogger',
   'otelAttributesFormat',
   'mapAuditLevelForOtel',
@@ -27,11 +27,6 @@ const expectedFns = [
 const missing = expectedFns.filter((name) => typeof main[name] !== 'function')
 if (missing.length > 0) {
   console.error(`CJS smoke: missing or non-function exports: ${missing.join(', ')}`)
-  process.exit(1)
-}
-
-if (!Array.isArray(main.defaultOtelRedactKeys)) {
-  console.error('CJS smoke: defaultOtelRedactKeys is not an array:', main.defaultOtelRedactKeys)
   process.exit(1)
 }
 

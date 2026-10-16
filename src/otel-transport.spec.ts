@@ -15,7 +15,7 @@ import { OpenTelemetryTransportV3 as Transport029 } from 'otel-winston-transport
 import { OpenTelemetryTransportV3 as TransportLatest } from 'otel-winston-transport-latest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type TransportStream from 'winston-transport'
-import { CallbackTransport, createLogger, type CreateLoggerOptions, type Logger } from './index'
+import { CallbackTransport, createErrorSerializer, createLogger, type CreateLoggerOptions, type Logger } from './index'
 import { jsonStringifyValuesFormat } from './json-stringify-values-format'
 import { otelAttributesFormat } from './otel-attributes-format'
 
@@ -123,10 +123,17 @@ describe.each(lines)('otel: true on %s', (_, Transport) => {
     expect(records[0].attributes.logLevel).toBe('audit')
   })
 
-  it('redacts the prompt and compacts a failed retry in errorDetail', async () => {
-    const [record] = await emitted({ otel: true, transports: [new Transport()] }, (logger, message) =>
-      logger.error(message, { error: retryError() }),
-    )
+  // The README's recipe for AI SDK errors, built from generic options only.
+  it('redacts the prompt and trims a failed retry with redactPaths and createErrorSerializer', async () => {
+    const options: Partial<CreateLoggerOptions> = {
+      otel: { maxAttributeLength: 8192 },
+      redactPaths: ['requestBodyValues'],
+      errorSerializer: createErrorSerializer({
+        omit: (key, error) => key === 'responseHeaders' || (key === 'lastError' && 'errors' in error),
+      }),
+      transports: [new Transport()],
+    }
+    const [record] = await emitted(options, (logger, message) => logger.error(message, { error: retryError() }))
     expect(record.attributes['exception.type']).toBe('AI_RetryError')
     const detail = JSON.parse(record.attributes.errorDetail as string) as { errors: Record<string, unknown>[] }
     expect(detail).not.toHaveProperty('lastError')
@@ -136,8 +143,8 @@ describe.each(lines)('otel: true on %s', (_, Transport) => {
     expect(JSON.stringify(record.attributes)).not.toContain('the whole prompt')
   })
 
-  it('caps errorDetail at 8,192 characters', async () => {
-    const [record] = await emitted({ otel: true, transports: [new Transport()] }, (logger, message) =>
+  it('caps errorDetail at maxAttributeLength', async () => {
+    const [record] = await emitted({ otel: { maxAttributeLength: 8192 }, transports: [new Transport()] }, (logger, message) =>
       logger.error(message, { error: Object.assign(new Error('big'), { body: 'x'.repeat(20_000) }) }),
     )
     const detail = record.attributes.errorDetail as string

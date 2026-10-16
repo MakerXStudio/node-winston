@@ -1,5 +1,4 @@
 import { JsonOptions } from 'logform'
-import { isCompactedErrorKey } from './compacted-error-keys'
 import { serializesItself } from './serializes-itself'
 
 /**
@@ -8,6 +7,35 @@ import { serializesItself } from './serializes-itself'
  * `serializeErrorFormat({ serializer })`) to customise how errors are rendered across all transports.
  */
 export type ErrorSerializer = (error: Error) => Record<string, unknown>
+
+export interface ErrorSerializerOptions {
+  /**
+   * Leaves a property out of an error. Called with each property name of every error the
+   * serializer reaches — the error itself, its `cause`, each entry of its `errors`, and any error
+   * held in a property — and the error that holds it. Return `true` to leave the property out.
+   * Plain objects are never passed to it. A predicate that throws keeps the property.
+   *
+   * @example Leave response headers out of every error, at any depth
+   * ```ts
+   * createErrorSerializer({ omit: (key) => key === 'responseHeaders' })
+   * ```
+   */
+  omit?: (key: string, error: Error) => boolean
+
+  /**
+   * Writes an object that has already been written once in the same error as `'[Duplicate]'`, so
+   * an object two properties share appears once. The first property in key order keeps the object.
+   * Values written through their `toJSON`, such as a `Date`, are always written in full.
+   * Defaults to `false`.
+   */
+  dedupe?: boolean
+}
+
+interface WalkOptions {
+  omit: ErrorSerializerOptions['omit']
+  /** Every object already written, when `dedupe` is on. */
+  written: WeakSet<object> | undefined
+}
 
 // Stops runaway recursion on pathological structures. 16 is well past anything that occurs in
 // realistic error trees; consumers who need deeper walks can supply a custom `errorSerializer`.
@@ -44,7 +72,17 @@ const safeToJSON = (source: object): { ok: true; value: unknown } | { ok: false 
   }
 }
 
-const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => {
+/** The caller's `omit`, which must never throw out of the log call. */
+const isOmitted = (options: WalkOptions, key: string, error: Error): boolean => {
+  if (!options.omit) return false
+  try {
+    return options.omit(key, error) === true
+  } catch {
+    return false
+  }
+}
+
+const walk = (value: unknown, seen: WeakSet<object>, depth: number, options: WalkOptions): unknown => {
   if (value === null || value === undefined) return value
   const type = typeof value
   if (type === 'bigint') return `${value as bigint}n`
@@ -57,29 +95,36 @@ const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => 
   if (seen.has(obj)) return '[Circular]'
   if (depth >= MAX_DEPTH) return '[Truncated]'
 
+  const errorLike = isErrorLike(obj)
+  // What `JSON.stringify` would have written: a `Date` becomes its ISO string (`null` when
+  // invalid) rather than `{}`. An error is never asked, so one that defines `toJSON` — an
+  // `AxiosError`, say — is still captured whole below.
+  const json = !Array.isArray(obj) && !errorLike && serializesItself(obj) ? safeToJSON(obj) : undefined
+
+  // A value written through its `toJSON` is what it returns, not a shared object, so it is never
+  // a duplicate.
+  if (!json?.ok && options.written) {
+    if (options.written.has(obj)) return '[Duplicate]'
+    options.written.add(obj)
+  }
+
   seen.add(obj)
   try {
-    if (Array.isArray(obj)) return obj.map((entry) => walk(entry, seen, depth + 1))
-
-    // What `JSON.stringify` would have written: a `Date` becomes its ISO string (`null` when
-    // invalid) rather than `{}`. An error is never asked, so one that defines `toJSON` — an
-    // `AxiosError`, say — is still captured whole below.
-    if (!isErrorLike(obj) && serializesItself(obj)) {
-      const json = safeToJSON(obj)
-      if (json.ok) return walk(json.value, seen, depth + 1)
-    }
+    if (Array.isArray(obj)) return obj.map((entry) => walk(entry, seen, depth + 1, options))
+    if (json?.ok) return walk(json.value, seen, depth + 1, options)
 
     const out: Record<string, unknown> = {}
     for (const key of Object.keys(obj)) {
+      if (errorLike && isOmitted(options, key, obj)) continue
       const read = safeRead(obj, key)
-      if (read.ok) out[key] = walk(read.value, seen, depth + 1)
+      if (read.ok) out[key] = walk(read.value, seen, depth + 1, options)
     }
-    if (isErrorLike(obj)) {
+    if (errorLike) {
       for (const key of WELL_KNOWN_ERROR_PROPS) {
-        if (key in out) continue
+        if (key in out || isOmitted(options, key, obj)) continue
         const read = safeRead(obj, key)
         if (!read.ok || read.value === undefined || read.value === null) continue
-        out[key] = walk(read.value, seen, depth + 1)
+        out[key] = walk(read.value, seen, depth + 1, options)
       }
     }
     return out
@@ -87,6 +132,30 @@ const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => 
     seen.delete(obj)
   }
 }
+
+/**
+ * Builds an {@link ErrorSerializer} that works like {@link serializeError}, and can leave
+ * properties out of each error or write a shared object once. Pass the result as `createLogger`'s
+ * `errorSerializer`.
+ *
+ * @example Leave out response headers, and an error's `lastError` when its `errors` holds it
+ * ```ts
+ * createLogger({
+ *   errorSerializer: createErrorSerializer({
+ *     omit: (key, error) => key === 'responseHeaders' || (key === 'lastError' && 'errors' in error),
+ *   }),
+ * })
+ * ```
+ */
+export const createErrorSerializer =
+  (options: ErrorSerializerOptions = {}): ErrorSerializer =>
+  (error) => {
+    if (error === null || error === undefined || typeof error !== 'object') {
+      return { name: 'NonError', message: typeof error === 'function' ? '<Function>' : String(error) }
+    }
+    const walkOptions: WalkOptions = { omit: options.omit, written: options.dedupe ? new WeakSet() : undefined }
+    return walk(error, new WeakSet(), 0, walkOptions) as Record<string, unknown>
+  }
 
 /**
  * Serialize an `Error` (or any thrown value) into a plain, JSON-serializable object.
@@ -98,32 +167,10 @@ const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => 
  * are stringified, functions are dropped, Buffers and streams render as sentinel strings,
  * and recursion is capped at a fixed depth (`'[Truncated]'`). Non-Error throws (strings,
  * numbers, etc.) are wrapped as `{ name: 'NonError', message: String(value) }`.
- */
-export const serializeError: ErrorSerializer = (error) => {
-  if (error === null || error === undefined || typeof error !== 'object') {
-    return { name: 'NonError', message: typeof error === 'function' ? '<Function>' : String(error) }
-  }
-  return walk(error, new WeakSet(), 0) as Record<string, unknown>
-}
-
-const compact = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(compact)
-  if (value === null || typeof value !== 'object') return value
-  const out: Record<string, unknown> = {}
-  for (const [key, entry] of Object.entries(value)) {
-    if (!isCompactedErrorKey(value, key)) out[key] = compact(entry)
-  }
-  return out
-}
-
-/**
- * {@link serializeError}, without what makes a failed AI SDK retry too large to log: `responseHeaders`
- * on every error, and `lastError` on an error whose `errors` already holds it.
  *
- * `otelAttributesFormat` does this to OpenTelemetry output by default. Pass this as `createLogger`'s
- * `errorSerializer` to compact every transport's output, the console included.
+ * Use {@link createErrorSerializer} to leave properties out or write shared objects once.
  */
-export const compactErrorSerializer: ErrorSerializer = (error) => compact(serializeError(error)) as Record<string, unknown>
+export const serializeError: ErrorSerializer = createErrorSerializer()
 
 /**
  * Builds a JSON replacer that substitutes `Error` instances with the output of the supplied

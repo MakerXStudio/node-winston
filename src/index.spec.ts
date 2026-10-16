@@ -3,6 +3,7 @@ import { config, format } from 'winston'
 import TransportStream from 'winston-transport'
 import { describe, expect, it } from 'vitest'
 import {
+  createErrorSerializer,
   createLogger,
   defaultLevelColors,
   defaultLevels,
@@ -349,11 +350,23 @@ describe('createLogger otel', () => {
     expect(JSON.parse(data)).toEqual({ secret: '<hidden>', other: 'def' })
   })
 
-  it("redacts requestBodyValues with the logger's redactedValue", () => {
+  it('redacts inside an error with redactPaths before flattening it', () => {
     const transport = new InMemoryTransport({})
-    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: true, redactedValue: '***' })
-    logger.error('failed', { error: Object.assign(new Error('boom'), { requestBodyValues: { prompt: 'secret' } }) })
-    expect(JSON.parse(transport.logs[0].errorDetail as string)).toEqual({ requestBodyValues: '***' })
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: true, redactPaths: ['body'] })
+    logger.error('failed', { error: Object.assign(new Error('boom'), { body: { prompt: 'secret' }, statusCode: 500 }) })
+    expect(JSON.parse(transport.logs[0].errorDetail as string)).toEqual({ body: '<redacted>', statusCode: 500 })
+  })
+
+  it('leaves out error properties with an errorSerializer from createErrorSerializer', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      otel: true,
+      errorSerializer: createErrorSerializer({ omit: (key) => key === 'headers' }),
+    })
+    logger.error('failed', { error: Object.assign(new Error('boom'), { headers: { a: '1' }, statusCode: 500 }) })
+    expect(JSON.parse(transport.logs[0].errorDetail as string)).toEqual({ statusCode: 500 })
   })
 
   it('runs after loggerOptions.format so injected object values are stringified', () => {
