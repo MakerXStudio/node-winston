@@ -14,6 +14,7 @@ import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } f
 import { OpenTelemetryTransportV3 as Transport029 } from 'otel-winston-transport-0.29'
 import { OpenTelemetryTransportV3 as TransportLatest } from 'otel-winston-transport-latest'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { format } from 'winston'
 import type TransportStream from 'winston-transport'
 import { CallbackTransport, createErrorSerializer, createLogger, type CreateLoggerOptions, type Logger } from './index'
 import { jsonStringifyValuesFormat } from './json-stringify-values-format'
@@ -124,6 +125,15 @@ describe.each(lines)('otel: true on %s', (_, Transport) => {
   })
 
   // The README's recipe for AI SDK errors, built from generic options only.
+  it('exports an audit record at INFO severity when loggerOptions.format colorizes the level', async () => {
+    const records = await emitted(
+      { otel: true, loggerOptions: { format: format.colorize() }, transports: [new Transport()] },
+      (logger, message) => logger.audit(message),
+    )
+    expect(records[0].severityNumber).toBe(SeverityNumber.INFO)
+    expect(records[0].attributes.logLevel).toBe('audit')
+  })
+
   it('redacts the prompt and trims a failed retry with redactPaths and createErrorSerializer', async () => {
     const options: Partial<CreateLoggerOptions> = {
       otel: { maxAttributeLength: 8192 },

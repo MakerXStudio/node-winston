@@ -12,8 +12,11 @@ export interface ErrorSerializerOptions {
   /**
    * Leaves a property out of an error. Called with the property name and the error that holds it,
    * for every error the serializer reaches: the error itself, its `cause`, each entry of its
-   * `errors`, and any error held in a property. Return `true` to leave the property out. It is never
-   * called for a plain object. If it throws, the property is kept.
+   * `errors`, and any error held in a property. Return `true` to leave the property out. If it
+   * throws, the property is kept.
+   *
+   * An error is an `Error` instance, or an object with a string `name`, `message` and `stack`, such
+   * as an error already serialized elsewhere. It is not called for any other object.
    *
    * @example Leave response headers out of every error, at any depth
    * ```ts

@@ -118,6 +118,16 @@ describe('otelAttributesFormat — level', () => {
     expect(result.logLevel).toBe('warn')
   })
 
+  it('reads the level from LEVEL, so a colorized string level still maps', () => {
+    const result = run({ [LEVEL]: 'audit', level: '\u001b[35maudit\u001b[39m' })
+    expect(result[LEVEL]).toBe('info')
+    expect(result.logLevel).toBe('audit')
+  })
+
+  it('keeps a string logLevel the record already has', () => {
+    expect(run({ [LEVEL]: 'audit', level: 'audit', logLevel: 'custom' }).logLevel).toBe('custom')
+  })
+
   it('maps nothing with mapAuditLevel: false', () => {
     const result = at('audit', { mapAuditLevel: false })
     expect(result[LEVEL]).toBe('audit')
@@ -175,10 +185,22 @@ describe('otelAttributesFormat — length cap', () => {
     expect(result.error).toMatchObject({ message: long, stack: long })
   })
 
-  it('does not split a surrogate pair', () => {
-    const value = run({ ctx: { body: '😀'.repeat(100) } }, { maxAttributeLength: 30 }).ctx as string
+  // `{"body":"` is 9 characters and each emoji is 2, so at 31 the cut falls inside a pair and at 30
+  // it falls between two pairs.
+  it.each([30, 31])('does not split a surrogate pair at maxAttributeLength %i', (max) => {
+    const value = run({ ctx: { body: '😀'.repeat(100) } }, { maxAttributeLength: max }).ctx as string
+    expect(value.length).toBeLessThanOrEqual(max)
     expect(value.endsWith('[Truncated]')).toBe(true)
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(value)).toBe(false)
+  })
+
+  it('writes as much of the marker as fits when maxAttributeLength is shorter than it', () => {
+    expect(run({ ctx: { body: 'x'.repeat(100) } }, { maxAttributeLength: 5 }).ctx).toBe('[Trun')
+  })
+
+  it('cuts nothing when maxAttributeLength is negative or NaN', () => {
+    expect(JSON.parse(run({ ctx: { body: 'x' } }, { maxAttributeLength: -1 }).ctx as string)).toEqual({ body: 'x' })
+    expect(JSON.parse(run({ ctx: { body: 'x' } }, { maxAttributeLength: NaN }).ctx as string)).toEqual({ body: 'x' })
   })
 })
 
@@ -194,7 +216,7 @@ describe('otelAttributesFormat — shared state', () => {
   it('applied twice writes the same record as applied once', () => {
     const fmt = otelAttributesFormat()
     const input = { [LEVEL]: 'audit', level: 'audit', message: 'm', error: withAttempts(), ctx: { a: 1 } } as unknown as TransformableInfo
-    const once = fmt.transform(structuredClone(input), fmt.options) as TransformableInfo
+    const once = fmt.transform(input, fmt.options) as TransformableInfo
     const onceCopy = { ...once }
     const twice = fmt.transform(once, fmt.options) as TransformableInfo
     expect(twice).toEqual(onceCopy)

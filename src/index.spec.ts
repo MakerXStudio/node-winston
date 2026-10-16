@@ -442,6 +442,20 @@ describe('createLogger otel audit level', () => {
     expect(info.logLevel).toBeUndefined()
   })
 
+  it('maps audit after a loggerOptions.format that colorizes the string level', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      otel: true,
+      loggerOptions: { format: format.colorize() },
+    })
+    logger.audit('audit-event')
+    const info = transport.logs[0] as Record<string | symbol, unknown>
+    expect(info[LEVEL]).toBe('info')
+    expect(info.logLevel).toBe('audit')
+  })
+
   it('runs after loggerOptions.format, which still sees LEVEL audit', () => {
     const seen: unknown[] = []
     const spy = format((info) => {

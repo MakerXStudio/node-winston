@@ -12,9 +12,12 @@ import { applyAuditLevelMapping } from './audit-level'
  * This format:
  * - rewrites `info[LEVEL]` from `audit` to `info` so OTEL maps to a known severity tier
  * - copies the original level onto `logLevel` on every record so it survives as an OTEL
- *   attribute (e.g. queryable as `customDimensions.logLevel == "audit"` in Azure Log Analytics)
+ *   attribute (e.g. queryable as `customDimensions.logLevel == "audit"` in Azure Log Analytics).
+ *   A record that already has a string `logLevel` keeps it.
  *
- * The string `info.level` is left as it is, so other transports still show `audit`.
+ * The level is read from `info[LEVEL]`, so a format that rewrites the string `info.level`, such as
+ * `format.colorize()`, can run first. The string `info.level` is left as it is, so other
+ * transports still show `audit`.
  *
  * `otelAttributesFormat` already does this, so most loggers need only that. Use this format on
  * its own in a chain you build yourself, for example beside `jsonStringifyValuesFormat`.

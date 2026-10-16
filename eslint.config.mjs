@@ -36,8 +36,9 @@ export default [
   },
   {
     // The OpenTelemetry transport is an optional peer. Importing it, or `@opentelemetry/api-logs`, from
-    // the library would make it required, and a second `api-logs` copy in an app sends every log
-    // line to a no-op. Specs drive the real transport under npm aliases instead.
+    // the library would make it required and can add a second `api-logs` copy to an app. A transport
+    // that gets its logger from a second copy before the SDK registers its provider writes every line
+    // to a no-op logger. Specs drive the real transport under npm aliases instead.
     files: ['src/**/*.ts'],
     ignores: ['src/**/*.spec.ts'],
     rules: {

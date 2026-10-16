@@ -26,7 +26,8 @@ export interface OtelAttributesFormatOptions {
   /**
    * The longest string this format writes. A longer one is cut short and ends in `[Truncated]`. Set
    * it to the backend's limit so that the backend does not cut the value without a marker. By
-   * default every string is written whole. Values that were already strings are never cut.
+   * default every string is written whole. Values that were already strings are never cut. A limit
+   * shorter than the 11-character marker writes as much of the marker as fits.
    *
    * @example App Insights keeps 8,192 characters of a custom dimension
    * ```ts
@@ -87,10 +88,15 @@ const isDescribableCause = (cause: unknown): boolean =>
       typeof cause.code === 'string' ||
       typeof cause.code === 'number'))
 
-/** Cuts a string to `max`, ending in `[Truncated]`, without splitting a surrogate pair. */
+/**
+ * Cuts a string to `max`, ending in `[Truncated]`, without splitting a surrogate pair. A `max`
+ * shorter than the marker gets as much of the marker as fits. A negative or `NaN` `max` cuts nothing.
+ */
 const cap = (text: string, max: number): string => {
-  if (text.length <= max) return text
-  let end = Math.max(0, max - TRUNCATED.length)
+  if (!(text.length > max)) return text
+  if (max < 0) return text
+  if (max < TRUNCATED.length) return TRUNCATED.slice(0, max)
+  let end = max - TRUNCATED.length
   const last = text.charCodeAt(end - 1)
   if (last >= 0xd800 && last <= 0xdbff) end -= 1
   return text.slice(0, end) + TRUNCATED

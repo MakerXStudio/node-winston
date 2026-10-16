@@ -263,7 +263,7 @@ const logger = createLogger({ otel: true })
 
 A transport before 0.29 is not supported: see [Migrating from v2](#migrating-from-v2).
 
-The transport is tied to an SDK line through its `@opentelemetry/api-logs` dependency, so move the two together. With two copies of `api-logs` in the tree, the transport gets a logger from a copy that no provider is registered with, and every log line is dropped.
+The transport is tied to an SDK line through its `@opentelemetry/api-logs` dependency, so move the two together. With two copies of `api-logs` in the tree, a transport constructed before the SDK registers its logger provider stays bound to a no-op logger, and every line it writes is dropped.
 
 ### What the format does
 
@@ -326,7 +326,7 @@ new OpenTelemetryTransportV3({
 })
 ```
 
-`@opentelemetry/instrumentation-winston` 0.68 and later take the same `severityMapping` option. Pair it with `otel: { mapAuditLevel: false }`. Do not turn the mapping off without a `severityMapping` when you set `logSeverity`, because an `audit` record with no severity is dropped.
+`@opentelemetry/instrumentation-winston` 0.68 and later take the same `severityMapping` option. Pair it with `otel: { mapAuditLevel: false }`. Turn the mapping off only together with a `severityMapping` for `audit`. Without one, an `audit` record has no severity, and Azure Monitor or a `logSeverity` filter drops it.
 
 ### Record size and privacy
 
@@ -458,10 +458,10 @@ const logger = createLogger({
 
 `createErrorSerializer` builds a serializer that works like `serializeError`, with two options:
 
-| Option   | Effect                                                                                                                                                                                                                                                                                                                  |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `omit`   | Leaves a property out of every error the serializer reaches: the error itself, its `cause`, each entry of its `errors`, and any error held in a property. It is called with the property name and the error that holds it, so a rule can depend on the error's other properties. It is never called for a plain object. |
-| `dedupe` | Writes an object that two properties of one error share only once, and each later occurrence as `'[Duplicate]'`. The first property in key order keeps the object.                                                                                                                                                      |
+| Option   | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `omit`   | Leaves a property out of every error the serializer reaches: the error itself, its `cause`, each entry of its `errors`, and any error held in a property. It is called with the property name and the error that holds it, so a rule can depend on the error's other properties. An error is an `Error` instance, or an object with a string `name`, `message` and `stack`, such as an error already serialized elsewhere. It is not called for any other object. |
+| `dedupe` | Writes an object that two properties of one error share only once, and each later occurrence as `'[Duplicate]'`. The first property in key order keeps the object.                                                                                                                                                                                                                                                                                                |
 
 ```ts
 import { createErrorSerializer, createLogger } from '@makerx/node-winston'
@@ -507,12 +507,14 @@ Breaking changes:
 | 2.x                                                                                      | 3.0                                                                                                                                  |
 | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `flatten: 'otel', mapAuditLevelForOtel: true`                                            | `otel: true`                                                                                                                         |
+| `flatten: 'otel'` without `mapAuditLevelForOtel`                                         | `otel: { mapAuditLevel: false }` for the same output, or `otel: true` to also map `audit`.                                           |
 | `flattenReplacer: r` with `flatten: 'otel'`                                              | `otel: { replacer: r }`                                                                                                              |
 | `otelAttributesFormat()` on the transport, plus `mapAuditLevelForOtel: true`             | `otelAttributesFormat()` on the transport alone. A transport set to `level: 'audit'` is now allowed.                                 |
 | `flatten: true`, or `jsonStringifyValuesFormat()` on a transport before 0.29             | Move the transport and the SDK to 0.29 or later, then use `otelAttributesFormat()` or `otel`. If you cannot move yet, stay on 2.x.   |
 | A hand-written `errorSerializer` that walks `serializeError`'s output to drop properties | `createErrorSerializer({ omit })`, with the rule as the predicate. See [the AI SDK example](#example-ai-sdk-errors-in-app-insights). |
 
 - `@opentelemetry/winston-transport` is an optional peer dependency at `>=0.29`. npm 7 and later refuse to install alongside an older transport, and pnpm and Yarn warn. Consumers that do not ship logs through OpenTelemetry are unaffected.
+- `otelAttributesFormat` maps `audit` to `info` severity and writes `logLevel` by default. Pass `mapAuditLevel: false` to keep the 2.x output of `flatten: 'otel'` or of the format on a transport. With `otel: true`, `createLogger` throws if the logger, the console or a transport is set to `level: 'audit'`.
 - The audit mapping runs last. With `otel`, a `loggerOptions.format` now sees `LEVEL: 'audit'`. In 2.x it saw `info`.
 - A `Date` under `otel` is its ISO string, unquoted. `flatten: true` wrote it as a quoted JSON string.
 

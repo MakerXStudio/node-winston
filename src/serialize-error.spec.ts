@@ -247,7 +247,13 @@ describe('createErrorSerializer', () => {
     expect(createErrorSerializer({ omit: (key) => key === 'stack' })(new Error('x'))).not.toHaveProperty('stack')
   })
 
-  it('omit is never asked about a plain object', () => {
+  it('omit is called for a plain object with a string name, message and stack', () => {
+    const serialized = { name: 'RemoteError', message: 'm', stack: 'RemoteError: m', headers: { a: '1' } }
+    const out = createErrorSerializer({ omit: (key) => key === 'headers' })(Object.assign(new Error('x'), { remote: serialized }))
+    expect(out.remote).toEqual({ name: 'RemoteError', message: 'm', stack: 'RemoteError: m' })
+  })
+
+  it('omit is never asked about any other plain object', () => {
     const asked: string[] = []
     const serializer = createErrorSerializer({
       omit: (key) => {
