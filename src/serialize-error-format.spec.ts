@@ -29,6 +29,25 @@ describe('serializeErrorFormat', () => {
     expect(arrErr.message).toBe('in-array')
   })
 
+  it('passes a Date in metadata through as the same Date, not {}', () => {
+    const when = new Date('2026-01-02T03:04:05.000Z')
+    const result = run({ when, nested: { when }, list: [when] })
+    expect(result.when).toBe(when)
+    expect((result.nested as { when: unknown }).when).toBe(when)
+    expect((result.list as unknown[])[0]).toBe(when)
+  })
+
+  it('serializes an error that defines toJSON rather than passing it through', () => {
+    class HttpClientError extends Error {
+      toJSON() {
+        return { summary: 'trimmed' }
+      }
+    }
+    const result = run({ error: new HttpClientError('bad gateway') })
+    expect(result.error).toMatchObject({ message: 'bad gateway' })
+    expect(result.error).not.toBeInstanceOf(Error)
+  })
+
   it('leaves non-error values untouched', () => {
     const result = run({ a: 1, b: 'two', c: { nested: true } })
     expect(result).toMatchObject({ a: 1, b: 'two', c: { nested: true } })

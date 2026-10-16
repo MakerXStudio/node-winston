@@ -2,6 +2,7 @@ import { TransformableInfo } from 'logform'
 import { SPLAT } from 'triple-beam'
 import { format } from 'winston'
 import { ErrorSerializer, serializeError } from './serialize-error'
+import { serializesItself } from './serializes-itself'
 
 export interface SerializeErrorFormatOptions {
   /**
@@ -219,6 +220,9 @@ export const serializeErrorFormat = format((info, opts) => {
   const walk = (value: unknown, seen: WeakSet<object>): unknown => {
     if (value instanceof Error) return serializer(value)
     if (!value || typeof value !== 'object') return value
+    // Passed through as the same reference, as 1.x did: a transport receives the `Date` itself and
+    // the JSON step writes its ISO string. Rebuilt from its own keys, a `Date` would be `{}`.
+    if (serializesItself(value)) return value
     if (seen.has(value)) return '[Circular]'
     seen.add(value)
     try {
