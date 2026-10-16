@@ -1,9 +1,8 @@
 name: Publish
 
+# 2.x maintenance: fixes only. Published by hand from the v2.x branch under the `latest-2` dist-tag,
+# so a 2.x release never moves `latest` off 3.x. Run it from the Actions tab with v2.x selected.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -21,3 +20,4 @@ jobs:
     uses: makerxstudio/shared-config/.github/workflows/node-trusted-publish.yml@main
     with:
       access: public
+      tag: latest-2
