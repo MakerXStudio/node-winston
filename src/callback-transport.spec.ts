@@ -139,8 +139,8 @@ describe('CallbackTransport', () => {
       () => {},
       { level: 'audit' },
     )
-    // We intercept `level` in our constructor so `createLogger`'s `otel` audit guard
-    // (which reads `transport.level`) does not trip when the transport is configured for audit.
+    // The constructor keeps `level` for itself, so `createLogger`'s `otel` audit guard (which reads
+    // `transport.level`) does not trip when the transport is configured for audit.
     expect(transport.level).toBeUndefined()
   })
 

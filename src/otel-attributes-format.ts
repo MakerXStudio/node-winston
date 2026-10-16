@@ -11,8 +11,8 @@ const TRUNCATED = '[Truncated]'
 export interface OtelAttributesFormatOptions {
   /**
    * `JSON.stringify` replacer applied to every value this format stringifies, `errorDetail`
-   * included. It is called with the object holding the value as `this`, so it can decide on a
-   * property by its siblings. Return `undefined` to leave the property out.
+   * included. It is called with the object that holds the value as `this`, so it can decide on a
+   * property from the other properties of that object. Return `undefined` to leave the property out.
    */
   replacer?: Replacer
 
@@ -24,9 +24,9 @@ export interface OtelAttributesFormatOptions {
   mapAuditLevel?: boolean
 
   /**
-   * The longest string this format writes. A longer one is cut short and ends in `[Truncated]`, so
-   * a backend's own limit never cuts it silently. By default every string is written whole. Values
-   * that were already strings are never cut.
+   * The longest string this format writes. A longer one is cut short and ends in `[Truncated]`. Set
+   * it to the backend's limit so that the backend does not cut the value without a marker. By
+   * default every string is written whole. Values that were already strings are never cut.
    *
    * @example App Insights keeps 8,192 characters of a custom dimension
    * ```ts

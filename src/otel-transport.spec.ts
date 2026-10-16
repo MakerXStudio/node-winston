@@ -152,9 +152,9 @@ describe.each(lines)('otel: true on %s', (_, Transport) => {
     expect(detail.endsWith('[Truncated]')).toBe(true)
   })
 
-  // Upstream behaviour, pinned so a change to it is noticed: with no `err` or `error` on the record,
-  // the transport takes the first splat argument that looks like an exception — any object with a
-  // `name`, `code`, `message` or `stack` — as the record's exception.
+  // Upstream behaviour, pinned so that a change to it fails this test. With no `err` or `error` on
+  // the record, the transport takes the first splat argument that has a `name`, `code`, `message`
+  // or `stack` as the record's exception.
   it('records a metadata object with a name as the exception when there is no err or error', async () => {
     const [record] = await emitted({ otel: true, transports: [new Transport()] }, (logger, message) =>
       logger.info(message, { name: 'Alice' }),

@@ -10,10 +10,10 @@ export type ErrorSerializer = (error: Error) => Record<string, unknown>
 
 export interface ErrorSerializerOptions {
   /**
-   * Leaves a property out of an error. Called with each property name of every error the
-   * serializer reaches — the error itself, its `cause`, each entry of its `errors`, and any error
-   * held in a property — and the error that holds it. Return `true` to leave the property out.
-   * Plain objects are never passed to it. A predicate that throws keeps the property.
+   * Leaves a property out of an error. Called with the property name and the error that holds it,
+   * for every error the serializer reaches: the error itself, its `cause`, each entry of its
+   * `errors`, and any error held in a property. Return `true` to leave the property out. It is never
+   * called for a plain object. If it throws, the property is kept.
    *
    * @example Leave response headers out of every error, at any depth
    * ```ts
@@ -72,7 +72,7 @@ const safeToJSON = (source: object): { ok: true; value: unknown } | { ok: false 
   }
 }
 
-/** The caller's `omit`, which must never throw out of the log call. */
+/** Calls `omit`. A throw keeps the property, so a faulty predicate cannot throw out of the log call. */
 const isOmitted = (options: WalkOptions, key: string, error: Error): boolean => {
   if (!options.omit) return false
   try {
@@ -97,8 +97,8 @@ const walk = (value: unknown, seen: WeakSet<object>, depth: number, options: Wal
 
   const errorLike = isErrorLike(obj)
   // What `JSON.stringify` would have written: a `Date` becomes its ISO string (`null` when
-  // invalid) rather than `{}`. An error is never asked, so one that defines `toJSON` — an
-  // `AxiosError`, say — is still captured whole below.
+  // invalid) rather than `{}`. An error is never asked, so an error that defines `toJSON`, such as
+  // an `AxiosError`, is still captured whole below.
   const json = !Array.isArray(obj) && !errorLike && serializesItself(obj) ? safeToJSON(obj) : undefined
 
   // A value written through its `toJSON` is what it returns, not a shared object, so it is never

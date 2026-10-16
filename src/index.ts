@@ -187,13 +187,13 @@ export interface CreateLoggerOptions {
   loggerOptions?: Omit<LoggerOptions, 'transports'>
 }
 
-/** 2.x options with no 3.0 meaning. Each maps onto `otel`; see "Migrating from v2" in the README. */
+/** 2.x options that 3.0 removed. Each maps onto `otel`. See "Migrating from v2" in the README. */
 const REMOVED_OPTIONS = ['flatten', 'flattenReplacer', 'mapAuditLevelForOtel'] as const
 
 /**
- * Throws for an option 3.0 removed. TypeScript rejects one in an object literal, but not in options
- * built from config or spread from another object, and ignoring it would quietly send OpenTelemetry
- * records nested again.
+ * Throws for an option that 3.0 removed. TypeScript rejects one in an object literal, but not in
+ * options built from config or spread from another object. Ignoring it would send OpenTelemetry
+ * records nested, with no warning.
  */
 const rejectRemovedOptions = (options: CreateLoggerOptions) => {
   const given = REMOVED_OPTIONS.filter((key) => (options as Record<string, unknown>)[key] !== undefined)
