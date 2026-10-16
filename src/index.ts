@@ -9,6 +9,7 @@ import {
 } from 'winston'
 import * as Transport from 'winston-transport'
 import { jsonStringifyValuesFormat } from './json-stringify-values-format'
+import { otelAttributesFormat } from './otel-attributes-format'
 import { omitFormat } from './omit-format'
 import { omitNilFormat } from './omit-nil-format'
 import { prettyConsoleFormat } from './pretty-console-format'
@@ -36,6 +37,7 @@ export * from './redact-values'
 export * from './serialize-error'
 export * from './serialize-error-format'
 export * from './map-audit-level-for-otel'
+export * from './otel-attributes-format'
 export * from './utils'
 
 // winstonjs' default levels have debug and verbose reversed, which is confusing and causes filtering issues with Seq,
@@ -153,16 +155,24 @@ export interface CreateLoggerOptions {
   redactedValue?: string
 
   /**
-   * When `true`, appends `jsonStringifyValuesFormat` as the final logger-level format — applied after every
-   * other logger-level format (including any `loggerOptions.format`) — serialising every top-level value on
-   * the log info to a JSON string. Produces a flat `{ key: string }` shape suitable for transports/aggregators
-   * that expect scalar values (e.g. OTEL + Azure Log Analytics).
+   * Appends a flattening format as the final logger-level format — applied after every other
+   * logger-level format (including any `loggerOptions.format`), so it affects every transport.
+   *
+   * - `'otel'` appends {@link otelAttributesFormat}: the shape `@opentelemetry/winston-transport` 0.29
+   *   and later needs. An `err`/`error` value stays an object holding `name`, `message` and `stack`,
+   *   which the transport records as the exception, the rest of the error goes to `<key>Detail` as
+   *   JSON, and every other object value becomes a JSON string.
+   * - `true` appends `jsonStringifyValuesFormat`, serialising every top-level object value — errors
+   *   included — to a JSON string. For a transport before 0.29; from 0.29 the transport records a
+   *   stringified error as one `exception.message` holding the whole JSON.
+   *
+   * To flatten only what one transport receives, put the format on that transport instead.
    */
-  flatten?: boolean
+  flatten?: boolean | 'otel'
 
   /**
-   * Optional `JSON.stringify` replacer forwarded to `flatten` when serialising each top-level value.
-   * Only applied when `flatten` is `true`.
+   * Optional `JSON.stringify` replacer forwarded to `flatten` when serialising each value.
+   * Applied in both `flatten` modes.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   flattenReplacer?: (this: any, key: string, value: any) => any
@@ -279,7 +289,8 @@ export function createLogger(options: CreateLoggerOptions): any {
   if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue, errorSerializer }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)
   // flatten is applied last so all prior transformations are captured in the stringified values
-  if (flatten) loggerFormats.push(jsonStringifyValuesFormat({ replacer: flattenReplacer }))
+  if (flatten === 'otel') loggerFormats.push(otelAttributesFormat({ replacer: flattenReplacer }))
+  else if (flatten) loggerFormats.push(jsonStringifyValuesFormat({ replacer: flattenReplacer }))
 
   // create logger options using supplied options + transports; loggerOptions.levels (if any) overrides defaultLevels
   const loggerOptions: LoggerOptions = {
