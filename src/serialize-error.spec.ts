@@ -172,4 +172,42 @@ describe('createSerializableErrorReplacer', () => {
     const result = JSON.parse(JSON.stringify({ nested: new Error('message') }, replacer)) as { nested: { marker: string } }
     expect(result.nested.marker).toBe('custom')
   })
+
+  it('writes a Date property as its ISO string, as JSON.stringify would, not as {}', () => {
+    const error = Object.assign(new Error('boom'), { at: new Date('2026-01-02T03:04:05.000Z') })
+    expect(serializeError(error).at).toBe('2026-01-02T03:04:05.000Z')
+  })
+
+  it('writes an invalid Date property as null rather than throwing', () => {
+    const error = Object.assign(new Error('boom'), { at: new Date('not a date') })
+    expect(serializeError(error).at).toBeNull()
+  })
+
+  it('writes a URL property as its href', () => {
+    const error = Object.assign(new Error('boom'), { url: new URL('https://example.test/a?b=1') })
+    expect(serializeError(error).url).toBe('https://example.test/a?b=1')
+  })
+
+  it("walks a value's own keys when its toJSON throws", () => {
+    const awkward = {
+      id: 7,
+      toJSON: () => {
+        throw new Error('no')
+      },
+    }
+    expect(serializeError(Object.assign(new Error('boom'), { awkward })).awkward).toEqual({ id: 7 })
+  })
+
+  it('never asks an error for its toJSON, so an error that defines one is still captured whole', () => {
+    class HttpClientError extends Error {
+      readonly status = 502
+      toJSON() {
+        return { summary: 'trimmed' }
+      }
+    }
+    const out = serializeError(new HttpClientError('bad gateway'))
+    expect(out).toMatchObject({ message: 'bad gateway', status: 502 })
+    expect(out.stack).toBeDefined()
+    expect(out.summary).toBeUndefined()
+  })
 })

@@ -1,4 +1,5 @@
 import { JsonOptions } from 'logform'
+import { serializesItself } from './serializes-itself'
 
 /**
  * Signature for a function that converts an `Error` instance into a plain, JSON-serializable
@@ -32,6 +33,16 @@ const safeRead = (source: object, key: string | symbol): { ok: true; value: unkn
   }
 }
 
+/** `toJSON`'s result, or nothing when it throws or hands back the value itself. */
+const safeToJSON = (source: object): { ok: true; value: unknown } | { ok: false } => {
+  try {
+    const value: unknown = (source as { toJSON: () => unknown }).toJSON()
+    return value === source ? { ok: false } : { ok: true, value }
+  } catch {
+    return { ok: false }
+  }
+}
+
 const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => {
   if (value === null || value === undefined) return value
   const type = typeof value
@@ -48,6 +59,14 @@ const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => 
   seen.add(obj)
   try {
     if (Array.isArray(obj)) return obj.map((entry) => walk(entry, seen, depth + 1))
+
+    // What `JSON.stringify` would have written: a `Date` becomes its ISO string (`null` when
+    // invalid) rather than `{}`. An error is never asked, so one that defines `toJSON` — an
+    // `AxiosError`, say — is still captured whole below.
+    if (!isErrorLike(obj) && serializesItself(obj)) {
+      const json = safeToJSON(obj)
+      if (json.ok) return walk(json.value, seen, depth + 1)
+    }
 
     const out: Record<string, unknown> = {}
     for (const key of Object.keys(obj)) {
@@ -73,7 +92,8 @@ const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => 
  *
  * Captures `name`, `message`, `stack`, `code`, `cause`, and `errors` (AggregateError) even when
  * they are non-enumerable, walks own enumerable properties, recurses into nested errors and
- * objects, and is safe against circular references (cycles render as `'[Circular]'`). BigInts
+ * objects, and is safe against circular references (cycles render as `'[Circular]'`). A value
+ * that defines `toJSON` (a `Date`, a `URL`) is replaced by what it returns. BigInts
  * are stringified, functions are dropped, Buffers and streams render as sentinel strings,
  * and recursion is capped at a fixed depth (`'[Truncated]'`). Non-Error throws (strings,
  * numbers, etc.) are wrapped as `{ name: 'NonError', message: String(value) }`.

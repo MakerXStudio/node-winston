@@ -149,6 +149,47 @@ describe('createLogger error serialization', () => {
   })
 })
 
+describe('createLogger Date metadata', () => {
+  const when = new Date('2026-01-02T03:04:05.000Z')
+
+  it('a transport receives a Date in metadata as the Date itself', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+    logger.info('db query', { parameters: [when, 1] })
+    const { parameters } = transport.logs[0] as { parameters: unknown[] }
+    expect(parameters[0]).toBe(when)
+    expect(JSON.stringify(parameters)).toBe('["2026-01-02T03:04:05.000Z",1]')
+  })
+
+  it('flatten writes a Date in metadata as its ISO string', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], flatten: true })
+    logger.info('db query', { parameters: [when, 1], at: when })
+    const info = transport.logs[0] as Record<string, unknown>
+    expect(info.parameters).toBe('["2026-01-02T03:04:05.000Z",1]')
+    expect(info.at).toBe('"2026-01-02T03:04:05.000Z"')
+  })
+
+  it('a Date survives redaction beside a redacted key', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], redactPaths: ['token'] })
+    logger.info('grant', { token: 'secret', at: when })
+    const info = transport.logs[0] as Record<string, unknown>
+    expect(info.token).toBe('<redacted>')
+    expect(info.at).toBeInstanceOf(Date)
+    expect(JSON.stringify(info.at)).toBe('"2026-01-02T03:04:05.000Z"')
+  })
+
+  it('a Date logged beside an error is kept', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+    logger.error('db query error', { parameters: [when], error: new Error('timeout') })
+    const info = transport.logs[0] as { parameters: unknown[]; error: { message: string } }
+    expect(info.parameters[0]).toBe(when)
+    expect(info.error.message).toBe('timeout')
+  })
+})
+
 describe('createLogger omitPaths', () => {
   it('removes top-level and nested dot-path fields', () => {
     const transport = new InMemoryTransport({})

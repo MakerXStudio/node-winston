@@ -331,6 +331,12 @@ Normalising the arguments also means the error instance is never written as the 
 
 Interpolation is left alone. A message holding a `util.format` token means the arguments after it are interpolation values rather than metadata — winston merges nothing onto the record for such a call — so `logger.error('failed: %s', err)` keeps the error in the splat position it was passed in, as does any `Error` past the metadata position. Those are still serialised by `serializeErrorFormat` where they lie, so `format.splat()` finds them there.
 
+#### Values that serialise themselves
+
+A value that defines `toJSON` — a `Date`, a `URL`, a date-library instance — is left as it is in log metadata, so a transport receives the `Date` itself and any JSON step writes its ISO string, as 1.x did. Inside a serialized error, where the output must be plain, the value is replaced by what its `toJSON` returns: `{ at: new Date(…) }` on an error becomes `at: '2026-01-02T03:04:05.000Z'`, and an invalid `Date` becomes `null`. An error is never asked for its `toJSON`, so one that defines it (an `AxiosError`, say) is still captured whole.
+
+> **Fixed in 2.2.1.** From 2.0.0 to 2.2.0 a `Date` anywhere in log metadata reached every transport as `{}`.
+
 > **Upgrading from 2.1.** `logger.error(err)` used to put `name`, `message` and `stack` at the top of the record; error detail now sits under `error` instead, matching `logger.error('msg', { error })`. Read `error.stack` rather than `stack`, and adjust any `omitPaths`/`redactPaths` that pointed at the old top-level keys.
 >
 > `logger.error('msg', err)` no longer has the error's message concatenated onto yours, and no longer copies `stack` to the top of the record: `message` is `'msg'`, and the detail is under `error`.
