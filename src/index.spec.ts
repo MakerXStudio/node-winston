@@ -2,7 +2,14 @@ import { LEVEL, SPLAT } from 'triple-beam'
 import { config, format } from 'winston'
 import TransportStream from 'winston-transport'
 import { describe, expect, it } from 'vitest'
-import { createLogger, defaultLevelColors, defaultLevels, winstonDefaultLevelColors, winstonDefaultLevels } from './index'
+import {
+  createLogger,
+  defaultLevelColors,
+  defaultLevels,
+  otelAttributesFormat,
+  winstonDefaultLevelColors,
+  winstonDefaultLevels,
+} from './index'
 
 describe('logger', () => {
   it('verbose logs are screened out when level is debug', () => {
@@ -161,13 +168,13 @@ describe('createLogger Date metadata', () => {
     expect(JSON.stringify(parameters)).toBe('["2026-01-02T03:04:05.000Z",1]')
   })
 
-  it('flatten writes a Date in metadata as its ISO string', () => {
+  it('otel writes a Date in metadata as its ISO string, unquoted', () => {
     const transport = new InMemoryTransport({})
-    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], flatten: true })
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: true })
     logger.info('db query', { parameters: [when, 1], at: when })
     const info = transport.logs[0] as Record<string, unknown>
     expect(info.parameters).toBe('["2026-01-02T03:04:05.000Z",1]')
-    expect(info.at).toBe('"2026-01-02T03:04:05.000Z"')
+    expect(info.at).toBe('2026-01-02T03:04:05.000Z')
   })
 
   it('a Date survives redaction beside a redacted key', () => {
@@ -304,13 +311,13 @@ describe('createLogger child loggers', () => {
   })
 })
 
-describe('createLogger flatten', () => {
+describe('createLogger otel', () => {
   it('stringifies object and array values and leaves scalars alone', () => {
     const transport = new InMemoryTransport({})
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      flatten: true,
+      otel: true,
     })
     logger.info('hello', { obj: { a: 1 }, arr: [1, 2], count: 3, flag: true, text: 'literal' })
     const info = transport.logs[0] as Record<string, unknown>
@@ -321,19 +328,32 @@ describe('createLogger flatten', () => {
     expect(info.text).toBe('literal')
   })
 
-  it('forwards flattenReplacer to JSON.stringify for each value', () => {
+  it('keeps an error an object holding what the transport records as the exception', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: true })
+    logger.error('failed', { error: Object.assign(new Error('boom'), { statusCode: 500 }) })
+    const info = transport.logs[0] as Record<string, unknown>
+    expect(info.error).toMatchObject({ name: 'Error', message: 'boom' })
+    expect(JSON.parse(info.errorDetail as string)).toEqual({ statusCode: 500 })
+  })
+
+  it('passes its options to the format, replacer included', () => {
     const transport = new InMemoryTransport({})
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      flatten: true,
-      flattenReplacer: (key, value) => (key === 'secret' ? '<hidden>' : value),
+      otel: { replacer: (key, value: unknown) => (key === 'secret' ? '<hidden>' : value) },
     })
     logger.info('hello', { data: { secret: 'abc', other: 'def' } })
     const { data } = transport.logs[0] as { data: string }
-    const parsed = JSON.parse(data) as { secret: string; other: string }
-    expect(parsed.secret).toBe('<hidden>')
-    expect(parsed.other).toBe('def')
+    expect(JSON.parse(data)).toEqual({ secret: '<hidden>', other: 'def' })
+  })
+
+  it("redacts requestBodyValues with the logger's redactedValue", () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: true, redactedValue: '***' })
+    logger.error('failed', { error: Object.assign(new Error('boom'), { requestBodyValues: { prompt: 'secret' } }) })
+    expect(JSON.parse(transport.logs[0].errorDetail as string)).toEqual({ requestBodyValues: '***' })
   })
 
   it('runs after loggerOptions.format so injected object values are stringified', () => {
@@ -345,21 +365,28 @@ describe('createLogger flatten', () => {
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      flatten: true,
+      otel: true,
       loggerOptions: { format: injectFormat() },
     })
     logger.info('hello')
     expect((transport.logs[0] as { injected: unknown }).injected).toBe('{"a":1}')
   })
+
+  it('leaves records nested without it', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+    logger.info('hello', { obj: { a: 1 } })
+    expect(transport.logs[0].obj).toEqual({ a: 1 })
+  })
 })
 
-describe('createLogger mapAuditLevelForOtel', () => {
+describe('createLogger otel audit level', () => {
   it('rewrites the LEVEL symbol from audit to info, preserves the original on logLevel, and leaves the string level alone', () => {
     const transport = new InMemoryTransport({})
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      mapAuditLevelForOtel: true,
+      otel: true,
     })
     logger.audit('audit-event', { actor: 'user-1' })
     const info = transport.logs[0] as Record<string | symbol, unknown>
@@ -374,7 +401,7 @@ describe('createLogger mapAuditLevelForOtel', () => {
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      mapAuditLevelForOtel: true,
+      otel: true,
     })
     logger.warn('heads-up')
     const info = transport.logs[0] as Record<string | symbol, unknown>
@@ -383,7 +410,7 @@ describe('createLogger mapAuditLevelForOtel', () => {
     expect(info.logLevel).toBe('warn')
   })
 
-  it('is opt-in — when disabled, audit records keep their level and no logLevel is added', () => {
+  it('without otel, audit records keep their level and no logLevel is added', () => {
     const transport = new InMemoryTransport({})
     const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
     logger.audit('audit-event')
@@ -393,10 +420,30 @@ describe('createLogger mapAuditLevelForOtel', () => {
     expect(info.logLevel).toBeUndefined()
   })
 
+  it('with mapAuditLevel: false, audit records keep their LEVEL', () => {
+    const transport = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: { mapAuditLevel: false } })
+    logger.audit('audit-event')
+    const info = transport.logs[0] as Record<string | symbol, unknown>
+    expect(info[LEVEL]).toBe('audit')
+    expect(info.logLevel).toBeUndefined()
+  })
+
+  it('runs after loggerOptions.format, which still sees LEVEL audit', () => {
+    const seen: unknown[] = []
+    const spy = format((info) => {
+      seen.push(info[LEVEL])
+      return info
+    })
+    const logger = createLogger({ consoleOptions: { silent: true }, otel: true, loggerOptions: { format: spy() } })
+    logger.audit('audit-event')
+    expect(seen).toEqual(['audit'])
+  })
+
   it('throws when loggerOptions.level is audit (records would be silently dropped after rewrite)', () => {
     expect(() =>
       createLogger({
-        mapAuditLevelForOtel: true,
+        otel: true,
         consoleOptions: { silent: true },
         loggerOptions: { level: 'audit' },
       }),
@@ -406,7 +453,7 @@ describe('createLogger mapAuditLevelForOtel', () => {
   it('throws when consoleOptions.level is audit', () => {
     expect(() =>
       createLogger({
-        mapAuditLevelForOtel: true,
+        otel: true,
         consoleOptions: { level: 'audit', silent: true },
       }),
     ).toThrow(/consoleOptions\.level/)
@@ -416,11 +463,54 @@ describe('createLogger mapAuditLevelForOtel', () => {
     const transport = new InMemoryTransport({ level: 'audit' })
     expect(() =>
       createLogger({
-        mapAuditLevelForOtel: true,
+        otel: true,
         consoleOptions: { silent: true },
         transports: [transport],
       }),
     ).toThrow(/transports\[0\]\.level/)
+  })
+
+  it('does not throw for level audit with mapAuditLevel: false', () => {
+    expect(() =>
+      createLogger({ otel: { mapAuditLevel: false }, consoleOptions: { silent: true }, loggerOptions: { level: 'audit' } }),
+    ).not.toThrow()
+  })
+
+  it('keeps audit records on an audit-level transport when the format is on the transport, and leaves siblings at audit', () => {
+    const otelTransport = new InMemoryTransport({ level: 'audit', format: otelAttributesFormat() })
+    const sibling = new InMemoryTransport({ level: 'audit' })
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [otelTransport, sibling] })
+    logger.audit('audit-event')
+    logger.info('info-event')
+    expect(otelTransport.logs.map((info) => info.message)).toEqual(['audit-event'])
+    expect((otelTransport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('info')
+    expect(otelTransport.logs[0].logLevel).toBe('audit')
+    expect(sibling.logs.map((info) => info.message)).toEqual(['audit-event'])
+    expect((sibling.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('audit')
+    expect(sibling.logs[0].logLevel).toBeUndefined()
+  })
+})
+
+describe('createLogger removed 2.x options', () => {
+  it.each([
+    ['flatten', true],
+    ['flatten', false],
+    ['flattenReplacer', () => undefined],
+    ['mapAuditLevelForOtel', true],
+  ])('throws for %s, pointing to the migration guide', (key, value) => {
+    const options = { consoleOptions: { silent: true }, [key]: value }
+    expect(() => createLogger(options)).toThrow(/Migrating from v2/)
+  })
+
+  it('rejects them at compile time in an object literal', () => {
+    expect(() =>
+      // @ts-expect-error removed in 3.0
+      createLogger({ consoleOptions: { silent: true }, flatten: 'otel' }),
+    ).toThrow(/flatten/)
+    expect(() =>
+      // @ts-expect-error removed in 3.0
+      createLogger({ consoleOptions: { silent: true }, mapAuditLevelForOtel: true }),
+    ).toThrow(/mapAuditLevelForOtel/)
   })
 })
 
@@ -671,15 +761,14 @@ describe('createLogger DOMException', () => {
       transports: [transport],
       omitPaths: ['service'],
       redactPaths: ['authorization'],
-      mapAuditLevelForOtel: true,
-      flatten: true,
+      otel: true,
     })
 
     logger.error('everything on', { service: 'svc', authorization: 'Bearer abc', error: aborted() })
 
     expect(transport.logs[0].service).toBeUndefined()
     expect(transport.logs[0].authorization).toBe('<redacted>')
-    expect(transport.logs[0].error).toContain('TimeoutError')
+    expect(transport.logs[0].error).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
   })
 
   it('serialises one with a configured errorSerializer, wherever it sits in the record', () => {

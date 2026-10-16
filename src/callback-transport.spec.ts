@@ -122,7 +122,7 @@ describe('CallbackTransport', () => {
       ),
     )
 
-    // Simulate `mapAuditLevelForOtel`: LEVEL symbol rewritten from 'audit' to 'info', string
+    // Simulate the `otel` audit mapping: LEVEL symbol rewritten from 'audit' to 'info', string
     // `level` left untouched. winston-transport's stock filter would drop this; ours must not.
     const audit = { [LEVEL]: 'info', level: 'audit', message: 'audit-event' } as TransformableInfo
 
@@ -139,12 +139,12 @@ describe('CallbackTransport', () => {
       () => {},
       { level: 'audit' },
     )
-    // We intercept `level` in our constructor so `createLogger`'s mapAuditLevelForOtel guard
+    // We intercept `level` in our constructor so `createLogger`'s `otel` audit guard
     // (which reads `transport.level`) does not trip when the transport is configured for audit.
     expect(transport.level).toBeUndefined()
   })
 
-  it('routes audit records through createLogger with mapAuditLevelForOtel and level: audit', async () => {
+  it('routes audit records through createLogger with otel: true and level: audit', async () => {
     const { createLogger } = await import('./index')
     const received: TransformedInfo[] = []
     const transport = new CallbackTransport(
@@ -159,7 +159,7 @@ describe('CallbackTransport', () => {
     // (createLogger guard) or silently drop the record (LEVEL rewrite + symbol-based filter).
     const logger = createLogger({
       consoleOptions: { silent: true },
-      mapAuditLevelForOtel: true,
+      otel: true,
       transports: [transport],
     })
 
