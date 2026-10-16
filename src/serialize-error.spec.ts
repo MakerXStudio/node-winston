@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { createSerializableErrorReplacer, serializableErrorReplacer, serializeError } from './serialize-error'
+import { compactErrorSerializer, createSerializableErrorReplacer, serializableErrorReplacer, serializeError } from './serialize-error'
 
 describe('serializeError', () => {
   it('message and stack are not enumerable (and not serialized) by default', () => {
@@ -209,5 +209,60 @@ describe('createSerializableErrorReplacer', () => {
     expect(out).toMatchObject({ message: 'bad gateway', status: 502 })
     expect(out.stack).toBeDefined()
     expect(out.summary).toBeUndefined()
+  })
+})
+
+describe('compactErrorSerializer', () => {
+  /** An AI SDK `APICallError`: its response headers are own properties. */
+  const apiCallError = (attempt: number) =>
+    Object.assign(new Error(`attempt ${attempt} failed`), {
+      name: 'AI_APICallError',
+      statusCode: 429,
+      responseHeaders: { 'x-request-id': `req-${attempt}` },
+      responseBody: 'rate limited',
+    })
+
+  /** An AI SDK `RetryError`: every attempt under `errors`, and the last once more under `lastError`. */
+  const retryError = () => {
+    const errors = [apiCallError(1), apiCallError(2)]
+    return Object.assign(new Error('Failed after 2 attempts'), { name: 'AI_RetryError', errors, lastError: errors[1] })
+  }
+
+  it('drops responseHeaders from every error and lastError beside errors', () => {
+    const out = compactErrorSerializer(retryError()) as { errors: Record<string, unknown>[] }
+    expect(out).not.toHaveProperty('lastError')
+    expect(out.errors).toHaveLength(2)
+    expect(out.errors.every((attempt) => !('responseHeaders' in attempt))).toBe(true)
+    expect(out.errors[1]).toMatchObject({ name: 'AI_APICallError', statusCode: 429, responseBody: 'rate limited' })
+  })
+
+  it('drops responseHeaders from a cause too', () => {
+    const out = compactErrorSerializer(new Error('wrapped', { cause: apiCallError(1) })) as { cause: Record<string, unknown> }
+    expect(out.cause).toMatchObject({ statusCode: 429 })
+    expect(out.cause).not.toHaveProperty('responseHeaders')
+  })
+
+  it('keeps lastError when there is no errors list', () => {
+    const error = Object.assign(new Error('x'), { lastError: apiCallError(1) })
+    expect(compactErrorSerializer(error)).toHaveProperty('lastError')
+  })
+
+  it('writes everything else as serializeError does', () => {
+    const error = Object.assign(new Error('plain'), { code: 'E_X', detail: { a: [1, 2] } })
+    expect(compactErrorSerializer(error)).toEqual(serializeError(error))
+  })
+
+  it('compacts what a transport receives when passed to createLogger as errorSerializer', async () => {
+    const { CallbackTransport, createLogger } = await import('./index')
+    const received: Record<string, unknown>[] = []
+    const transport = new CallbackTransport(
+      async ({ meta }) => void received.push(meta),
+      () => undefined,
+    )
+    const logger = createLogger({ consoleOptions: { silent: true }, errorSerializer: compactErrorSerializer, transports: [transport] })
+    logger.error('chat failed', { error: retryError() })
+    await transport.close!()
+    expect(received[0].error).not.toHaveProperty('lastError')
+    expect((received[0].error as { errors: object[] }).errors[0]).not.toHaveProperty('responseHeaders')
   })
 })

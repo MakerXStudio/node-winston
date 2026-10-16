@@ -1,4 +1,5 @@
 import { JsonOptions } from 'logform'
+import { isCompactedErrorKey } from './compacted-error-keys'
 import { serializesItself } from './serializes-itself'
 
 /**
@@ -104,6 +105,25 @@ export const serializeError: ErrorSerializer = (error) => {
   }
   return walk(error, new WeakSet(), 0) as Record<string, unknown>
 }
+
+const compact = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(compact)
+  if (value === null || typeof value !== 'object') return value
+  const out: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isCompactedErrorKey(value, key)) out[key] = compact(entry)
+  }
+  return out
+}
+
+/**
+ * {@link serializeError}, without what makes a failed AI SDK retry too large to log: `responseHeaders`
+ * on every error, and `lastError` on an error whose `errors` already holds it.
+ *
+ * `otelAttributesFormat` does this to OpenTelemetry output by default. Pass this as `createLogger`'s
+ * `errorSerializer` to compact every transport's output, the console included.
+ */
+export const compactErrorSerializer: ErrorSerializer = (error) => compact(serializeError(error)) as Record<string, unknown>
 
 /**
  * Builds a JSON replacer that substitutes `Error` instances with the output of the supplied

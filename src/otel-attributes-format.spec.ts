@@ -1,7 +1,7 @@
 import { TransformableInfo } from 'logform'
 import { LEVEL } from 'triple-beam'
 import { describe, expect, it } from 'vitest'
-import { otelAttributesFormat, OtelAttributesFormatOptions } from './otel-attributes-format'
+import { defaultOtelRedactKeys, otelAttributesFormat, OtelAttributesFormatOptions } from './otel-attributes-format'
 
 const run = (info: Record<string, unknown>, opts?: OtelAttributesFormatOptions) => {
   const input = { [LEVEL]: 'error', level: 'error', message: 'failed', ...info } as TransformableInfo
@@ -99,5 +99,184 @@ describe('otelAttributesFormat — other values', () => {
 
   it('keeps the routing symbols, so the record still reaches its transports', () => {
     expect(run({ obj: { a: 1 } })[LEVEL]).toBe('error')
+  })
+})
+
+describe('otelAttributesFormat — level', () => {
+  const at = (level: string, opts?: OtelAttributesFormatOptions) => run({ [LEVEL]: level, level }, opts)
+
+  it('exports an audit record at info severity and keeps the original on logLevel', () => {
+    const result = at('audit')
+    expect(result[LEVEL]).toBe('info')
+    expect(result.level).toBe('audit')
+    expect(result.logLevel).toBe('audit')
+  })
+
+  it('records logLevel on every other level and leaves its LEVEL alone', () => {
+    const result = at('warn')
+    expect(result[LEVEL]).toBe('warn')
+    expect(result.logLevel).toBe('warn')
+  })
+
+  it('maps nothing with mapAuditLevel: false', () => {
+    const result = at('audit', { mapAuditLevel: false })
+    expect(result[LEVEL]).toBe('audit')
+    expect(result).not.toHaveProperty('logLevel')
+  })
+})
+
+/** An AI SDK `APICallError` as `serializeError` writes it. */
+const apiCallError = (attempt: number) => ({
+  name: 'AI_APICallError',
+  message: `attempt ${attempt} failed`,
+  stack: `AI_APICallError: attempt ${attempt} failed\n    at x`,
+  statusCode: 429,
+  requestBodyValues: { messages: [{ role: 'user', content: 'the whole prompt' }] },
+  responseHeaders: { 'retry-after': '1', 'x-request-id': `req-${attempt}` },
+  responseBody: '{"error":"rate limited"}',
+})
+
+/** An AI SDK `RetryError`: every attempt under `errors`, and the last once more under `lastError`. */
+const retryError = () => ({
+  name: 'AI_RetryError',
+  message: 'Failed after 2 attempts',
+  stack: 'AI_RetryError: Failed after 2 attempts\n    at x',
+  reason: 'maxRetriesExceeded',
+  errors: [apiCallError(1), apiCallError(2)],
+  lastError: apiCallError(2),
+})
+
+describe('otelAttributesFormat — redaction', () => {
+  it('redacts requestBodyValues in errorDetail', () => {
+    const detail = JSON.parse(run({ error: apiCallError(1) }).errorDetail as string) as Record<string, unknown>
+    expect(detail.requestBodyValues).toBe('<redacted>')
+    expect(detail.statusCode).toBe(429)
+  })
+
+  it('redacts it inside every attempt of a retry', () => {
+    const detail = JSON.parse(run({ error: retryError() }).errorDetail as string) as { errors: Record<string, unknown>[] }
+    expect(detail.errors.map((attempt) => attempt.requestBodyValues)).toEqual(['<redacted>', '<redacted>'])
+  })
+
+  it('redacts it at the top of the record and nested in other values', () => {
+    const result = run({ requestBodyValues: { prompt: 'p' }, ctx: { call: { requestBodyValues: 'p' } } })
+    expect(result.requestBodyValues).toBe('<redacted>')
+    expect(JSON.parse(result.ctx as string)).toEqual({ call: { requestBodyValues: '<redacted>' } })
+  })
+
+  it('leaves a nil value as it is', () => {
+    expect(JSON.parse(run({ ctx: { requestBodyValues: null } }).ctx as string)).toEqual({ requestBodyValues: null })
+  })
+
+  it('redacts nothing with redactKeys: []', () => {
+    const detail = JSON.parse(run({ error: apiCallError(1) }, { redactKeys: [] }).errorDetail as string) as Record<string, unknown>
+    expect(detail.requestBodyValues).toEqual(apiCallError(1).requestBodyValues)
+  })
+
+  it('redacts added keys beside the defaults, with a custom redactedValue', () => {
+    const result = run(
+      { error: serialized({ prompt: 'p', requestBodyValues: 'v' }) },
+      { redactKeys: [...defaultOtelRedactKeys, 'prompt'], redactedValue: '***' },
+    )
+    expect(JSON.parse(result.errorDetail as string)).toEqual({ prompt: '***', requestBodyValues: '***' })
+  })
+
+  it('runs before the replacer, which sees the redacted value', () => {
+    const seen: unknown[] = []
+    const replacer = (key: string, value: unknown) => {
+      if (key === 'requestBodyValues') seen.push(value)
+      return value
+    }
+    run({ ctx: { requestBodyValues: 'p' } }, { replacer })
+    expect(seen).toEqual(['<redacted>'])
+  })
+})
+
+describe('otelAttributesFormat — retry compaction', () => {
+  it('drops responseHeaders from the error and from every attempt, and lastError beside errors', () => {
+    const result = run({ error: retryError() })
+    const detail = JSON.parse(result.errorDetail as string) as { errors: Record<string, unknown>[] }
+    expect(detail).not.toHaveProperty('lastError')
+    expect(detail.errors).toHaveLength(2)
+    expect(detail.errors.every((attempt) => !('responseHeaders' in attempt))).toBe(true)
+    expect(detail.errors[1].responseBody).toBe('{"error":"rate limited"}')
+    expect(result.error).toEqual({ name: 'AI_RetryError', message: 'Failed after 2 attempts', stack: retryError().stack })
+  })
+
+  it('drops responseHeaders from an error logged on its own', () => {
+    expect(JSON.parse(run({ error: apiCallError(1) }).errorDetail as string)).not.toHaveProperty('responseHeaders')
+  })
+
+  it('keeps lastError when there is no errors list to hold it', () => {
+    const detail = JSON.parse(run({ error: serialized({ lastError: apiCallError(1), errors: [] }) }).errorDetail as string)
+    expect(detail.lastError).toMatchObject({ message: 'attempt 1 failed' })
+  })
+
+  it("keeps a caller's own responseHeaders on a value that is not an error", () => {
+    expect(JSON.parse(run({ response: { status: 200, responseHeaders: { etag: 'x' } } }).response as string)).toEqual({
+      status: 200,
+      responseHeaders: { etag: 'x' },
+    })
+  })
+
+  it('keeps everything with compactErrors: false', () => {
+    const detail = JSON.parse(run({ error: retryError() }, { compactErrors: false }).errorDetail as string) as Record<string, unknown>
+    expect(detail).toHaveProperty('lastError')
+    expect((detail.errors as Record<string, unknown>[])[0]).toHaveProperty('responseHeaders')
+  })
+})
+
+describe('otelAttributesFormat — length cap', () => {
+  const long = 'x'.repeat(20_000)
+
+  it('cuts errorDetail to 8,192 characters, ending in [Truncated]', () => {
+    const detail = run({ error: serialized({ body: long }) }).errorDetail as string
+    expect(detail).toHaveLength(8192)
+    expect(detail.endsWith('[Truncated]')).toBe(true)
+  })
+
+  it('cuts other stringified values too', () => {
+    const value = run({ ctx: { body: long } }).ctx as string
+    expect(value).toHaveLength(8192)
+    expect(value.endsWith('[Truncated]')).toBe(true)
+  })
+
+  it('leaves strings the caller wrote, the message and the exception whole', () => {
+    const result = run({ message: long, text: long, error: serialized({ message: long, stack: long }) })
+    expect(result.message).toBe(long)
+    expect(result.text).toBe(long)
+    expect(result.error).toMatchObject({ message: long, stack: long })
+  })
+
+  it('honours a custom maxAttributeLength, and Infinity writes every string whole', () => {
+    expect(run({ ctx: { body: long } }, { maxAttributeLength: 100 }).ctx).toHaveLength(100)
+    expect(JSON.parse(run({ ctx: { body: long } }, { maxAttributeLength: Infinity }).ctx as string)).toEqual({ body: long })
+  })
+
+  it('does not split a surrogate pair', () => {
+    const value = run({ ctx: { body: '😀'.repeat(100) } }, { maxAttributeLength: 30 }).ctx as string
+    expect(value.endsWith('[Truncated]')).toBe(true)
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(value)).toBe(false)
+  })
+})
+
+describe('otelAttributesFormat — shared state', () => {
+  it('changes no nested value, so a transport placement leaves its siblings their own objects', () => {
+    const error = retryError()
+    const ctx = { requestBodyValues: 'p', inner: { a: 1 } }
+    const before = structuredClone({ error, ctx })
+    run({ error, ctx })
+    expect({ error, ctx }).toEqual(before)
+  })
+
+  it('applied twice writes the same record as applied once', () => {
+    const fmt = otelAttributesFormat()
+    const input = { [LEVEL]: 'audit', level: 'audit', message: 'm', error: retryError(), ctx: { a: 1 } } as unknown as TransformableInfo
+    const once = fmt.transform(structuredClone(input), fmt.options) as TransformableInfo
+    const onceCopy = { ...once }
+    const twice = fmt.transform(once, fmt.options) as TransformableInfo
+    expect(twice).toEqual(onceCopy)
+    expect(twice[LEVEL]).toBe('info')
+    expect(twice.logLevel).toBe('audit')
   })
 })
