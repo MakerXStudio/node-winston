@@ -18,6 +18,103 @@ Requires Node.js `>=20`.
 
 See [Migrating from v2](#migrating-from-v2) and [Migrating from v1](#migrating-from-v1) at the bottom for breaking changes and new functionality.
 
+## Quick start
+
+A typical service instruments itself for OpenTelemetry, creates one logger, and sends audit records to a store of their own. Steps 1 and 3 are optional.
+
+### 1. Instrument the app (optional)
+
+Install `@opentelemetry/sdk-node`, `@opentelemetry/instrumentation-winston` and `@opentelemetry/winston-transport`, and any other instrumentations you use. The winston instrumentation loads the transport at runtime but does not depend on it, and without it no record is sent.
+
+An instrumentation patches a module as that module loads, so tracing must start before anything imports winston. An entry point with no static imports enforces that order:
+
+```ts
+// main.ts
+await import('./tracing.js')
+await import('./server.js')
+```
+
+```ts
+// tracing.ts
+import { register } from 'node:module'
+import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
+import { WinstonInstrumentation } from '@opentelemetry/instrumentation-winston'
+import { NodeSDK } from '@opentelemetry/sdk-node'
+
+const instrumentations = [new HttpInstrumentation(), new WinstonInstrumentation()]
+
+// For an ES module app: winston is loaded by `import`, which only this hook can patch.
+register('@opentelemetry/instrumentation/hook.mjs', import.meta.url)
+
+export const sdk = new NodeSDK({ instrumentations })
+sdk.start()
+```
+
+`NodeSDK` reads its exporters from the standard `OTEL_*` environment variables. Call `sdk.shutdown()` last on shutdown, to send what is still queued.
+
+### 2. Create the logger
+
+```ts
+// logger.ts
+import { isLocalDev } from '@makerx/node-common'
+import { createLogger } from '@makerx/node-winston'
+
+export const logger = createLogger({
+  consoleFormat: isLocalDev ? 'pretty' : 'json',
+  loggerOptions: {
+    level: process.env.LOG_LEVEL ?? 'info',
+    defaultMeta: { service: 'my-api' },
+  },
+  redactPaths: ['headers.authorization', 'token'],
+  otel: true,
+})
+```
+
+`otel: true` shapes what the OpenTelemetry transport from step 1 receives. The console keeps nested JSON, or coloured YAML locally. Without step 1, or where the SDK does not run, as in most tests, `otel` changes nothing. To silence the console in tests, pass `consoleOptions: { silent: true }`. Every option is listed under [Options](#options).
+
+### 3. Send audit records to their own table (optional)
+
+`logger.audit()` writes at the custom `audit` level (see [Log levels](#log-levels)). To keep audit records in a Log Analytics table of their own as well, send them through a [`CallbackTransport`](#callbacktransport). This example uses the Azure Monitor Logs Ingestion API, with a data collection rule for the custom table:
+
+```ts
+// audit.ts
+import { DefaultAzureCredential } from '@azure/identity'
+import { LogsIngestionClient } from '@azure/monitor-ingestion'
+import { CallbackTransport, type LogError } from '@makerx/node-winston'
+
+const client = new LogsIngestionClient(process.env.AUDIT_ENDPOINT_URL!, new DefaultAzureCredential())
+
+export const createAuditTransport = (logError: LogError) =>
+  new CallbackTransport(
+    ({ message, meta }) =>
+      client.upload(process.env.AUDIT_RULE_ID!, process.env.AUDIT_STREAM_NAME!, [
+        { TimeGenerated: new Date().toISOString(), Message: message, Info: meta },
+      ]),
+    logError,
+    { onlyLevels: ['audit'], closeTimeoutMs: 5_000 },
+  )
+```
+
+```ts
+// logger.ts
+import { createAuditTransport } from './audit.js'
+
+const auditTransport = createAuditTransport((message, ...args) => logger.error(message, ...args))
+
+export const logger = createLogger({
+  // ...the options from step 2
+  transports: [auditTransport],
+})
+
+/** Call on shutdown, before `sdk.shutdown()`. Waits up to 5 seconds for audit uploads still running. */
+export const closeAuditTransport = () => auditTransport.close()
+```
+
+- `onlyLevels: ['audit']` forwards `audit` records only. The `level` option would also forward `error` and `warn`.
+- An upload that fails goes to `logError`, which logs it as an error. Errors never reach this transport, so a failing endpoint cannot loop.
+- Winston does not wait for a transport to close, so await `close()` yourself. `closeTimeoutMs` bounds the wait, and reports through `logError` the uploads still running.
+- The record columns match the custom table's data collection rule.
+
 ## Creating a Logger
 
 `createLogger` builds a winston `Logger` with a pre-configured `Console` transport and a set of logger-level formats that apply to every transport.
@@ -51,7 +148,7 @@ Formats are applied in layers:
 { error: 0, warn: 1, audit: 2, info: 3, debug: 4, verbose: 5 }
 ```
 
-`audit` is for audit-trail events: a sign-in, a role change, a data export. It is a log level, not an audit store, and it adds no delivery or retention guarantee. To send audit records somewhere else, route them with a transport such as [`CallbackTransport`](#callbacktransport). A logger at `info` or more verbose writes `audit` records, and a logger at `warn` drops them. OpenTelemetry has no `audit` severity, so with `otel` an `audit` record is exported at `info` severity with `logLevel: 'audit'`. See [Audit severity](#audit-severity).
+`audit` is for audit-trail events: a sign-in, a role change, a data export. It is a log level, not an audit store, and it adds no delivery or retention guarantee. To send audit records somewhere else as well, see [step 3 of the quick start](#3-send-audit-records-to-their-own-table-optional). A logger at `info` or more verbose writes `audit` records, and a logger at `warn` drops them. OpenTelemetry has no `audit` severity, so with `otel` an `audit` record is exported at `info` severity with `logLevel: 'audit'`. See [Audit severity](#audit-severity).
 
 Colours for the default levels (including `audit`) are registered on the first `createLogger` call that uses them, so `colorize` / pretty output works out of the box.
 
@@ -82,55 +179,6 @@ const logger = createLogger({
 logger.http('GET /items') // typed; logger.audit would be a type error
 ```
 
-### Example: environment-driven configuration
-
-At MakerX we typically drive logger configuration from config files, varying output by environment:
-
-`logger.ts`:
-
-```ts
-import { isLocalDev } from '@makerx/node-common'
-import { createLogger } from '@makerx/node-winston'
-import config from 'config'
-
-const logger = createLogger({
-  consoleFormat: isLocalDev ? 'pretty' : 'json',
-  consoleOptions: config.get('logging.consoleOptions'),
-  loggerOptions: config.get('logging.loggerOptions'),
-  omitPaths: config.get('logging.omitPaths'),
-})
-
-export default logger
-```
-
-Runtime configurations for different environments might look like:
-
-```ts
-// local development — coloured YAML, verbose level, strip redundant defaultMeta
-const logger = createLogger({
-  consoleFormat: 'pretty',
-  loggerOptions: {
-    defaultMeta: { service: 'my-application-name' },
-    level: 'verbose',
-  },
-  omitPaths: ['service'],
-})
-
-// deployed — structured JSON, info level
-const logger = createLogger({
-  consoleFormat: 'json',
-  loggerOptions: {
-    defaultMeta: { service: 'my-application-name' },
-    level: 'info',
-  },
-})
-
-// integration tests — silence console output
-const logger = createLogger({
-  consoleOptions: { silent: true },
-})
-```
-
 ## Transports
 
 `createLogger` creates a `Console` transport by default. Add [other transports](https://github.com/winstonjs/winston/blob/master/docs/transports.md) via the `transports` option — they share the logger-level formats:
@@ -150,116 +198,23 @@ const logger = createLogger({
 })
 ```
 
-### Custom transport as an integration point
+### `CallbackTransport`
 
-A custom `winston-transport` is a clean place to fan selected log records out to an external destination — an audit endpoint, a queue, an analytics service. Subclass `Transport`, override `log` to filter and dispatch, and override `close` to drain in-flight work on shutdown so records aren't lost when the process exits.
+`CallbackTransport` sends records to a promise-returning handler, such as an audit table, a queue or an analytics service. It takes the handler, a `LogError` sink for handler failures, and options:
 
-The library exports `extractTransformableInfo`, a small helper that strips winston's internal `triple-beam` symbols (`LEVEL`, `SPLAT`) from the `TransformableInfo` and splits out `level`, `message` and the remaining metadata:
+| Option           | Description                                                                                                                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `onlyLevels`     | Forwards only records at these levels.                                                                                                                                                                  |
+| `level`          | Forwards a level and every level above it. It compares the string `info.level`, so it stays accurate when a logger-level format such as `mapAuditLevelForOtel` rewrites the triple-beam `LEVEL` symbol. |
+| `closeTimeoutMs` | The longest `close()` waits for dispatches still running. By default it waits for all of them.                                                                                                          |
 
-```ts
-import Transport from 'winston-transport'
-import { type TransformableInfo } from 'logform'
-import { extractTransformableInfo } from '@makerx/node-winston'
-
-export type LogError = (message: string, ...args: any[]) => void
-
-class AuditTransport extends Transport {
-  private readonly inFlight = new Set<Promise<unknown>>()
-
-  constructor(private readonly logError: LogError) {
-    super()
-  }
-
-  override log(info: TransformableInfo, next: () => void): void {
-    const { level, message, meta } = extractTransformableInfo(info)
-
-    if (level !== 'audit') {
-      next()
-      return
-    }
-
-    const promise = Promise.resolve()
-      .then(() => sendToAuditEndpoint({ level, message, ...meta }))
-      .catch((error) => this.logError('Error in AuditTransport:', { error }))
-      .finally(() => this.inFlight.delete(promise))
-
-    this.inFlight.add(promise)
-
-    next()
-  }
-
-  override async close(): Promise<void> {
-    await Promise.allSettled([...this.inFlight])
-  }
-}
-
-const logger = createLogger({
-  transports: [new AuditTransport((message, ...args) => logger.error(message, ...args))],
-})
-```
-
-A few things worth calling out:
-
-- Always call `next()` exactly once per record, including when the level filter rejects it — winston-transport is a `Writable` stream, and skipping the callback stalls the pipeline.
-- Don't `await` the dispatch inside `log`. Track the promise in a `Set` so `close()` can wait on it later, and let the dispatch run in the background.
-- Inject an error sink (`logError`) rather than logging dispatch failures via the same logger this transport is attached to — otherwise a failing endpoint produces an audit record that produces another failing dispatch.
-- Override `close()` and `Promise.allSettled` the in-flight set so a failing dispatch doesn't reject the drain. Winston calls `close` from `logger.close()` / `logger.end()`, so transports get a chance to flush before exit.
-
-#### `CallbackTransport`
-
-For the common case where the only thing you'd customise is the dispatch itself, the library exports `CallbackTransport` — a ready-made subclass that wraps the boilerplate above. Construct it with a promise-returning `LogHandler` (receives a `TransformedInfo` — the same `{ level, message, meta }` shape `extractTransformableInfo` returns) and a `LogError` sink for dispatch failures, and pass any standard winston-transport options (e.g. `level`) through the third argument:
-
-```ts
-import { CallbackTransport, createLogger } from '@makerx/node-winston'
-
-const logger = createLogger({
-  transports: [
-    new CallbackTransport(
-      ({ level, message, meta }) => sendToAuditEndpoint({ level, message, ...meta }),
-      (message, ...args) => logger.error(message, ...args),
-      { level: 'audit' },
-    ),
-  ],
-})
-```
-
-In-flight dispatches are tracked internally and drained via `Promise.allSettled` on `close()`, and any rejection from the handler is routed to the supplied `logError` so a failing endpoint can't recurse back through this transport.
-
-`CallbackTransport` filters on the string `info.level` rather than the triple-beam `LEVEL` symbol, so the `level` option stays accurate when a logger-level format such as `mapAuditLevelForOtel` rewrites the symbol. The transport keeps its `level` option and does not pass it to the base `winston-transport` class.
+The handler receives `{ level, message, meta }`, the shape `extractTransformableInfo` returns. A handler that rejects is reported to `logError` and never fails the log call. Give it a `logError` whose records this transport does not forward, or a failing endpoint produces a record that fails again. [Step 3 of the quick start](#3-send-audit-records-to-their-own-table-optional) is a complete example.
 
 ## OpenTelemetry
 
-Send logs through OpenTelemetry with [`@opentelemetry/instrumentation-winston`](https://www.npmjs.com/package/@opentelemetry/instrumentation-winston) and `createLogger({ otel: true })`. The instrumentation adds an [`@opentelemetry/winston-transport`](https://www.npmjs.com/package/@opentelemetry/winston-transport) transport to every logger and stamps trace and span ids on each record. `otel: true` gives that transport `otelAttributesFormat`, which shapes each record into the attributes the logs SDK and most backends need. The console and every other transport are unchanged.
+Send logs through OpenTelemetry with [`@opentelemetry/instrumentation-winston`](https://www.npmjs.com/package/@opentelemetry/instrumentation-winston) and `createLogger({ otel: true })`, as in steps [1](#1-instrument-the-app-optional) and [2](#2-create-the-logger) of the quick start. The instrumentation adds an [`@opentelemetry/winston-transport`](https://www.npmjs.com/package/@opentelemetry/winston-transport) transport to every logger and stamps trace and span ids on each record. `otel: true` gives that transport `otelAttributesFormat`, which shapes each record into the attributes the logs SDK and most backends need. The console and every other transport are unchanged.
 
-Install both packages. The instrumentation loads the transport at runtime but does not depend on it, and without it no record is sent. The transport is an optional peer dependency of this library, at 0.29 or later.
-
-### Setup
-
-Register `WinstonInstrumentation` with your other instrumentations, in a module that runs before anything imports winston. An instrumentation patches a module as it loads, so a logger created from a winston that loaded first is never instrumented.
-
-```ts
-// tracing.ts: load first, for example with `node --import ./tracing.js ./main.js`
-import { register } from 'node:module'
-import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
-import { WinstonInstrumentation } from '@opentelemetry/instrumentation-winston'
-import { NodeSDK } from '@opentelemetry/sdk-node'
-
-const instrumentations = [new HttpInstrumentation(), new WinstonInstrumentation()]
-
-// For an ES module app: winston is loaded by `import`, which only this hook can patch.
-register('@opentelemetry/instrumentation/hook.mjs', import.meta.url)
-
-new NodeSDK({ instrumentations }).start()
-```
-
-```ts
-// logger.ts
-import { createLogger } from '@makerx/node-winston'
-
-export const logger = createLogger({ otel: true })
-```
-
-Where the SDK does not run, as in most tests, the logger has no OpenTelemetry transport and `otel` changes nothing. Do not also add an `OpenTelemetryTransportV3` yourself while the instrumentation sends logs: every record would be exported twice.
+Do not also add an `OpenTelemetryTransportV3` yourself while the instrumentation sends logs: every record would be exported twice. `otel` also shapes a transport passed in `transports`, but a transport added later with `logger.add` gets no format.
 
 ### Supported transport lines
 
@@ -486,7 +441,7 @@ format.combine(serializeErrorFormat({ serializer }), format.json({ replacer: cre
 
 ## Migrating from v2
 
-v3 has one OpenTelemetry setup: `WinstonInstrumentation` adds the transport, and `createLogger({ otel: true })` shapes what it receives. It supports `@opentelemetry/winston-transport` 0.29 and later only. 2.x gets fixes only, published under the `latest-2` dist-tag.
+v3 has one OpenTelemetry setup, shown in the [quick start](#quick-start): `WinstonInstrumentation` adds the transport, and `createLogger({ otel: true })` shapes what it receives. It supports `@opentelemetry/winston-transport` 0.29 and later only. 2.x gets fixes only, published under the `latest-2` dist-tag.
 
 Breaking changes:
 
@@ -497,7 +452,7 @@ Breaking changes:
 | `flatten: 'otel'` or `flatten: true`, with `mapAuditLevelForOtel: true`                                                                                                   | `otel: true`                                                                                                                         |
 | `flatten: 'otel'` without `mapAuditLevelForOtel`                                                                                                                          | `otel: true`. Records also get `logLevel`, and `audit` is exported at `info` severity.                                               |
 | `flattenReplacer: r`                                                                                                                                                      | `otel: { replacer: r }`                                                                                                              |
-| An `OpenTelemetryTransportV3` you add yourself, with `otelAttributesFormat()` or `jsonStringifyValuesFormat()`, and `disableLogSending: true` on `WinstonInstrumentation` | Remove the transport and `disableLogSending`, and use `otel: true`. See [Setup](#setup).                                             |
+| An `OpenTelemetryTransportV3` you add yourself, with `otelAttributesFormat()` or `jsonStringifyValuesFormat()`, and `disableLogSending: true` on `WinstonInstrumentation` | Remove the transport and `disableLogSending`, and use `otel: true`. See the [quick start](#quick-start).                             |
 | A transport before 0.29                                                                                                                                                   | Move the transport and the SDK to 0.29 or later. If you cannot move yet, stay on 2.x.                                                |
 | A hand-written `errorSerializer` that walks `serializeError`'s output to drop properties                                                                                  | `createErrorSerializer({ omit })`, with the rule as the predicate. See [the AI SDK example](#example-ai-sdk-errors-in-app-insights). |
 
@@ -511,6 +466,7 @@ New functionality:
 - `otel` finds the transport `WinstonInstrumentation` adds, so the console stays readable while OpenTelemetry receives flat attributes.
 - `otelAttributesFormat` takes a `maxAttributeLength` option, beside its `replacer`.
 - `createErrorSerializer` builds an error serializer that can leave properties out of every error, or write a shared object once.
+- `CallbackTransport` takes `onlyLevels`, to forward only some levels, and `closeTimeoutMs`, to bound how long `close()` waits.
 
 ## Migrating from v1
 
