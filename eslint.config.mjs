@@ -40,7 +40,7 @@ export default [
     // that gets its logger from a second copy before the SDK registers its provider writes every line
     // to a no-op logger. Specs drive the real transport under npm aliases instead.
     files: ['src/**/*.ts'],
-    ignores: ['src/**/*.spec.ts'],
+    ignores: ['src/**/*.spec.ts', 'src/tests/**'],
     rules: {
       'no-restricted-imports': [
         'error',

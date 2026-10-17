@@ -22,17 +22,14 @@ export type LogHandler = (info: TransformedInfo) => Promise<unknown>
  * with the dispatch handler, an error sink for dispatch failures, and (optionally) the standard
  * winston-transport options.
  *
- * Unlike the stock winston-transport `level` filter — which compares the triple-beam `LEVEL`
- * symbol — this transport filters on the string `info.level` instead. That makes the `level`
- * option safe to combine with `createLogger({ otel: true })`, whose audit mapping rewrites the
- * `LEVEL` symbol but leaves `info.level` alone. The option is intercepted in the constructor (not
- * forwarded to the base class), so `createLogger`'s `otel` + `level: 'audit'` guard does not trip
- * on it.
+ * The stock winston-transport `level` filter compares the triple-beam `LEVEL` symbol. This transport
+ * filters on the string `info.level` instead, so its `level` option stays accurate when a
+ * logger-level format such as `mapAuditLevelForOtel` rewrites the `LEVEL` symbol. The constructor
+ * keeps the option and does not pass it to the base class, so the base filter never runs.
  *
  * @example
  * ```ts
  * const logger = createLogger({
- *   otel: true,
  *   transports: [
  *     new CallbackTransport(
  *       ({ level, message, meta }) => sendToAuditEndpoint({ level, message, ...meta }),

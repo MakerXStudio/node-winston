@@ -122,8 +122,8 @@ describe('CallbackTransport', () => {
       ),
     )
 
-    // Simulate the `otel` audit mapping: LEVEL symbol rewritten from 'audit' to 'info', string
-    // `level` left untouched. winston-transport's stock filter would drop this; ours must not.
+    // As `mapAuditLevelForOtel` leaves a record: LEVEL rewritten from 'audit' to 'info', the string
+    // `level` untouched. winston-transport's stock filter would drop this record, and ours must not.
     const audit = { [LEVEL]: 'info', level: 'audit', message: 'audit-event' } as TransformableInfo
 
     transport.log!(audit, () => {})
@@ -139,13 +139,13 @@ describe('CallbackTransport', () => {
       () => {},
       { level: 'audit' },
     )
-    // The constructor keeps `level` for itself, so `createLogger`'s `otel` audit guard (which reads
-    // `transport.level`) does not trip when the transport is configured for audit.
+    // The constructor keeps `level` for itself, so the base class's filter, which reads the LEVEL
+    // symbol, never runs.
     expect(transport.level).toBeUndefined()
   })
 
-  it('routes audit records through createLogger with otel: true and level: audit', async () => {
-    const { createLogger } = await import('./index')
+  it('routes audit records at level audit after a logger-level mapAuditLevelForOtel', async () => {
+    const { createLogger, mapAuditLevelForOtel } = await import('./index')
     const received: TransformedInfo[] = []
     const transport = new CallbackTransport(
       async (info) => {
@@ -155,11 +155,11 @@ describe('CallbackTransport', () => {
       { level: 'audit' },
     )
 
-    // Without the level interception this combination would either throw at construction
-    // (createLogger guard) or silently drop the record (LEVEL rewrite + symbol-based filter).
+    // The mapping rewrites LEVEL before any transport filters, so a filter on LEVEL would drop the
+    // audit record.
     const logger = createLogger({
       consoleOptions: { silent: true },
-      otel: true,
+      loggerOptions: { format: mapAuditLevelForOtel() },
       transports: [transport],
     })
 

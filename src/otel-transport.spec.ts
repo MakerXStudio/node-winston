@@ -2,23 +2,23 @@
  * What a record looks like once it is an OpenTelemetry log record, through the real
  * `@opentelemetry/winston-transport` and the logs SDK — the row a backend stores.
  *
- * The supported transport line, installed side by side under npm aliases:
- * - 0.29: the oldest release that lifts `err`/`error` off the record as the exception.
- * - latest: also normalises object attributes into nested maps (from 0.32), and takes
- *   `severityMapping` and `logSeverity` options (from 0.34).
+ * The supported transport line, installed side by side:
+ * - 0.29, under an npm alias: the oldest release that lifts `err`/`error` off the record as the
+ *   exception.
+ * - latest, under its own name: also normalises object attributes into nested maps (from 0.32),
+ *   and takes `severityMapping` and `logSeverity` options (from 0.34).
  *
  * Each transport binds its logger when it is constructed, so the provider is registered first.
  */
 import { logs, SeverityNumber } from '@opentelemetry/api-logs'
 import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs'
 import { OpenTelemetryTransportV3 as Transport029 } from 'otel-winston-transport-0.29'
-import { OpenTelemetryTransportV3 as TransportLatest } from 'otel-winston-transport-latest'
+import { OpenTelemetryTransportV3 as TransportLatest } from '@opentelemetry/winston-transport'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { format } from 'winston'
 import type TransportStream from 'winston-transport'
 import { CallbackTransport, createErrorSerializer, createLogger, type CreateLoggerOptions, type Logger } from './index'
 import { jsonStringifyValuesFormat } from './json-stringify-values-format'
-import { otelAttributesFormat } from './otel-attributes-format'
 
 type TransportClass = new (options?: TransportStream.TransportStreamOptions) => TransportStream
 
@@ -172,16 +172,14 @@ describe.each(lines)('otel: true on %s', (_, Transport) => {
     expect(record.attributes['exception.type']).toBe('Alice')
     expect(record.attributes.name).toBe('Alice')
   })
-})
 
-describe.each(lines)('otelAttributesFormat on the transport on %s', (_, Transport) => {
-  it('flattens what the OpenTelemetry transport receives and leaves other transports nested', async () => {
+  it('leaves other transports nested', async () => {
     const seen: Record<string, unknown>[] = []
     const sibling = new CallbackTransport(
       async ({ meta }) => void seen.push(meta),
       () => undefined,
     )
-    const [record] = await emitted({ transports: [new Transport({ format: otelAttributesFormat() }), sibling] }, (logger, message) =>
+    const [record] = await emitted({ otel: true, transports: [new Transport(), sibling] }, (logger, message) =>
       logger.error(message, { error: failure(), request: { route: '/chat' } }),
     )
     expect(record.attributes).toMatchObject({ 'exception.type': 'ProviderError', request: '{"route":"/chat"}' })
@@ -190,8 +188,7 @@ describe.each(lines)('otelAttributesFormat on the transport on %s', (_, Transpor
   })
 
   it('exports audit records at INFO severity from a transport set to level audit', async () => {
-    const transport = new Transport({ level: 'audit', format: otelAttributesFormat() })
-    const records = await emitted({ transports: [transport] }, (logger, message) => {
+    const records = await emitted({ otel: true, transports: [new Transport({ level: 'audit' })] }, (logger, message) => {
       logger.audit(message)
       logger.info(message)
     })
@@ -199,8 +196,10 @@ describe.each(lines)('otelAttributesFormat on the transport on %s', (_, Transpor
     expect(records[0].severityNumber).toBe(SeverityNumber.INFO)
     expect(records[0].attributes.logLevel).toBe('audit')
   })
+})
 
-  it('records the whole error JSON as exception.message with jsonStringifyValuesFormat, which is why it is not for 0.29 and later', async () => {
+describe.each(lines)('jsonStringifyValuesFormat on %s', (_, Transport) => {
+  it('records the whole error JSON as exception.message, which is why it is not for the OpenTelemetry transport', async () => {
     const attributes = await exported(Transport, {}, new Transport({ format: jsonStringifyValuesFormat() }))
     expect(String(attributes['exception.message']).startsWith('{')).toBe(true)
     expect(attributes).not.toHaveProperty('exception.type')
@@ -216,24 +215,23 @@ describe('without otel on latest', () => {
 })
 
 describe('transport severity options on latest', () => {
-  it('severityMapping keeps severityText audit when the format leaves the level alone', async () => {
-    const transport = new TransportLatest({
-      format: otelAttributesFormat({ mapAuditLevel: false }),
-      severityMapping: { audit: SeverityNumber.INFO },
-    })
-    const [record] = await emitted({ transports: [transport] }, (logger, message) => logger.audit(message))
+  it('severityMapping keeps severityText audit when otel leaves the level alone', async () => {
+    const transport = new TransportLatest({ severityMapping: { audit: SeverityNumber.INFO } })
+    const [record] = await emitted({ otel: { mapAuditLevel: false }, transports: [transport] }, (logger, message) => logger.audit(message))
     expect(record.severityNumber).toBe(SeverityNumber.INFO)
     expect(record.severityText).toBe('audit')
     expect(record.attributes).not.toHaveProperty('logLevel')
   })
 
   it('logSeverity drops an audit record nothing maps', async () => {
-    const transport = new TransportLatest({ format: otelAttributesFormat({ mapAuditLevel: false }), logSeverity: SeverityNumber.INFO })
-    expect(await emitted({ transports: [transport] }, (logger, message) => logger.audit(message))).toHaveLength(0)
+    const transport = new TransportLatest({ logSeverity: SeverityNumber.INFO })
+    expect(
+      await emitted({ otel: { mapAuditLevel: false }, transports: [transport] }, (logger, message) => logger.audit(message)),
+    ).toHaveLength(0)
   })
 
-  it('logSeverity keeps an audit record the format maps', async () => {
-    const transport = new TransportLatest({ format: otelAttributesFormat(), logSeverity: SeverityNumber.INFO })
-    expect(await emitted({ transports: [transport] }, (logger, message) => logger.audit(message))).toHaveLength(1)
+  it('logSeverity keeps an audit record otel maps', async () => {
+    const transport = new TransportLatest({ logSeverity: SeverityNumber.INFO })
+    expect(await emitted({ otel: true, transports: [transport] }, (logger, message) => logger.audit(message))).toHaveLength(1)
   })
 })

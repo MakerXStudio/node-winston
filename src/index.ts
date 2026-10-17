@@ -153,17 +153,14 @@ export interface CreateLoggerOptions {
   redactedValue?: string
 
   /**
-   * Shapes every record for `@opentelemetry/winston-transport` 0.29 and later, by appending
-   * {@link otelAttributesFormat} as the last logger-level format. `true` uses the format's
-   * defaults; an object is passed to it as its options.
+   * Shapes what `@opentelemetry/winston-transport` 0.29 and later receives. Each
+   * `OpenTelemetryTransportV3` on the logger that has no format of its own gets
+   * {@link otelAttributesFormat}: the transport `WinstonInstrumentation` adds, and any passed in
+   * `transports`. Other transports, the console included, keep their nested output. `true` uses the
+   * format's defaults, and an object is passed to the format as its options.
    *
-   * Use this when the transport is added for you, as `WinstonInstrumentation` does. It changes what
-   * every transport receives, the console included. When you construct the OpenTelemetry transport
-   * yourself, put `otelAttributesFormat()` on that transport instead and leave this unset.
-   *
-   * The format exports an `audit` record at `info` severity. At the logger level that happens
-   * before every transport's level filter, so `createLogger` throws if the logger, the console or a
-   * transport is set to `level: 'audit'`, unless `mapAuditLevel` is `false`.
+   * The format runs after the transport's level filter, so its audit mapping never drops a record.
+   * A transport added later with `logger.add` is not shaped: give it `otelAttributesFormat()`.
    */
   otel?: boolean | OtelAttributesFormatOptions
 
@@ -181,8 +178,7 @@ export interface CreateLoggerOptions {
   /**
    * Winston `LoggerOptions` forwarded to the underlying logger (e.g. `level`, `defaultMeta`).
    * `transports` is managed by this library; pass extras via `transports` instead.
-   * A `format` provided here is appended after the library's logger-level formats, but still runs
-   * before `otel` (which is always last when enabled).
+   * A `format` provided here is appended after the library's logger-level formats.
    */
   loggerOptions?: Omit<LoggerOptions, 'transports'>
 }
@@ -199,9 +195,27 @@ const rejectRemovedOptions = (options: CreateLoggerOptions) => {
   const given = REMOVED_OPTIONS.filter((key) => (options as Record<string, unknown>)[key] !== undefined)
   if (given.length === 0) return
   throw new Error(
-    `createLogger no longer accepts ${given.join(', ')}. Use the \`otel\` option, or put otelAttributesFormat() ` +
-      `on the OpenTelemetry transport. See "Migrating from v2" in the @makerx/node-winston README.`,
+    `createLogger no longer accepts ${given.join(', ')}. Use the \`otel\` option. ` +
+      `See "Migrating from v2" in the @makerx/node-winston README.`,
   )
+}
+
+/**
+ * The class `@opentelemetry/winston-transport` exports. It is matched by name because this library
+ * does not depend on the transport, which is an optional peer.
+ */
+const OTEL_TRANSPORT_CLASS = 'OpenTelemetryTransportV3'
+
+/**
+ * Gives each OpenTelemetry transport on the logger that has no format of its own the
+ * `otelAttributesFormat`. `WinstonInstrumentation` adds its transport while winston configures the
+ * logger, so it is on the logger by the time winston's `createLogger` returns.
+ */
+const shapeOtelTransports = (logger: WinstonLogger, otelOptions: OtelAttributesFormatOptions) => {
+  const otelFormat = otelAttributesFormat(otelOptions)
+  for (const transport of logger.transports) {
+    if (transport.constructor?.name === OTEL_TRANSPORT_CLASS && !transport.format) transport.format = otelFormat
+  }
 }
 
 export const createConsoleTransport = ({
@@ -248,28 +262,6 @@ export function createLogger(options: CreateLoggerOptions): any {
   if (!userLevels || userLevels === defaultLevels) registerDefaultColors()
   else if (userLevels === winstonDefaultLevels) registerWinstonDefaultColors()
 
-  // Guard against silent audit-record loss: at the logger level the format rewrites the LEVEL symbol
-  // from 'audit' to 'info' before any transport filters, so a filter set to level:'audit' would then
-  // drop the record (info is more verbose than audit). On a transport's own format the filter runs
-  // first, so only this placement needs the guard.
-  if (otelOptions && otelOptions.mapAuditLevel !== false) {
-    const misconfigured: string[] = []
-    if (options.loggerOptions?.level === 'audit') misconfigured.push('loggerOptions.level')
-    if (options.consoleOptions?.level === 'audit') misconfigured.push('consoleOptions.level')
-    options.transports?.forEach((t, i) => {
-      if (t.level === 'audit') misconfigured.push(`transports[${i}].level`)
-    })
-    if (misconfigured.length > 0) {
-      throw new Error(
-        `Set ${misconfigured.join(', ')} to 'info' (or a more verbose level) instead of 'audit'. ` +
-          `With \`otel\` set, every record's triple-beam LEVEL is mapped from 'audit' to 'info' before ` +
-          `any transport filters it, so an 'audit'-level filter would drop audit records. To keep an ` +
-          `'audit'-level transport, put otelAttributesFormat() on the OpenTelemetry transport instead ` +
-          `of setting \`otel\`, or pass otel: { mapAuditLevel: false }.`,
-      )
-    }
-  }
-
   // aggregate transports
   const consoleTransport = createConsoleTransport(options)
   const transports: Transport[] = [consoleTransport]
@@ -284,8 +276,6 @@ export function createLogger(options: CreateLoggerOptions): any {
   // path ever does let one through.
   if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue, errorSerializer }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)
-  // otel is applied last so all prior transformations are captured in the stringified values
-  if (otelOptions) loggerFormats.push(otelAttributesFormat(otelOptions))
 
   // create logger options using supplied options + transports; loggerOptions.levels (if any) overrides defaultLevels
   const loggerOptions: LoggerOptions = {
@@ -295,7 +285,10 @@ export function createLogger(options: CreateLoggerOptions): any {
     transports,
   }
 
+  const logger = winstonCreateLogger(loggerOptions)
+  if (otelOptions) shapeOtelTransports(logger, otelOptions)
+
   // Wrapped rather than returned bare: winston branches three ways on an `Error` argument, and only
   // one of the shapes it produces needs no repair. See {@link withNormalizedErrorArgs}.
-  return withNormalizedErrorArgs(winstonCreateLogger(loggerOptions), Object.keys(loggerOptions.levels ?? defaultLevels))
+  return withNormalizedErrorArgs(logger, Object.keys(loggerOptions.levels ?? defaultLevels))
 }
