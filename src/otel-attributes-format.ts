@@ -17,12 +17,6 @@ export interface OtelAttributesFormatOptions {
   replacer?: Replacer
 
   /**
-   * Exports an `audit` record at `info` severity and copies every record's level onto `logLevel`.
-   * Defaults to `true`. See `mapAuditLevelForOtel` for why.
-   */
-  mapAuditLevel?: boolean
-
-  /**
    * The longest string this format writes. A longer one is cut short and ends in `[Truncated]`. Set
    * it to the backend's limit so that the backend does not cut the value without a marker. By
    * default every string is written whole. Values that were already strings are never cut. A limit
@@ -39,13 +33,11 @@ export interface OtelAttributesFormatOptions {
 interface Settings {
   replacer: Replacer | undefined
   maxAttributeLength: number
-  mapAuditLevel: boolean
 }
 
 const resolveSettings = (opts: OtelAttributesFormatOptions): Settings => ({
   replacer: opts.replacer,
   maxAttributeLength: opts.maxAttributeLength ?? Infinity,
-  mapAuditLevel: opts.mapAuditLevel ?? true,
 })
 
 /** A format instance keeps one options object for its lifetime, so its settings are resolved once. */
@@ -173,9 +165,10 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
  * turn them into nested map attributes, which most backends — Azure Log Analytics included — do not
  * index. Scalars are left alone. A `Date` becomes its ISO string, unquoted.
  *
- * OpenTelemetry has no severity for the custom `audit` level, so by default the format exports an
- * `audit` record at `info` severity, with every record's level on `logLevel`. See
- * {@link OtelAttributesFormatOptions} to turn that off, cap the strings it writes, or pass a replacer.
+ * OpenTelemetry has no severity for the custom `audit` level, so the format exports an `audit`
+ * record at `info` severity. It copies every record's level onto `logLevel`, which keeps `audit`
+ * apart from `info`, and `debug` apart from `verbose`, in a backend that stores only the severity.
+ * See {@link OtelAttributesFormatOptions} to cap the strings it writes or pass a replacer.
  *
  * Put it on the OpenTelemetry transport to keep other transports' output nested, or use
  * `createLogger({ otel: true })` when the transport is added for you, as `WinstonInstrumentation`
@@ -187,7 +180,7 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
  */
 export const otelAttributesFormat = format((info, opts) => {
   const settings = settingsFor(opts as OtelAttributesFormatOptions | undefined)
-  if (settings.mapAuditLevel) applyAuditLevelMapping(info)
+  applyAuditLevelMapping(info)
   const record = info as unknown as Record<string, unknown>
   const lifted = EXCEPTION_KEYS.find((key) => isExceptionCandidate(record[key]))
   for (const key of Object.keys(record)) {

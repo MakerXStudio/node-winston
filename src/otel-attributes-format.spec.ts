@@ -103,7 +103,7 @@ describe('otelAttributesFormat — other values', () => {
 })
 
 describe('otelAttributesFormat — level', () => {
-  const at = (level: string, opts?: OtelAttributesFormatOptions) => run({ [LEVEL]: level, level }, opts)
+  const at = (level: string) => run({ [LEVEL]: level, level })
 
   it('exports an audit record at info severity and keeps the original on logLevel', () => {
     const result = at('audit')
@@ -126,12 +126,6 @@ describe('otelAttributesFormat — level', () => {
 
   it('keeps a string logLevel the record already has', () => {
     expect(run({ [LEVEL]: 'audit', level: 'audit', logLevel: 'custom' }).logLevel).toBe('custom')
-  })
-
-  it('maps nothing with mapAuditLevel: false', () => {
-    const result = at('audit', { mapAuditLevel: false })
-    expect(result[LEVEL]).toBe('audit')
-    expect(result).not.toHaveProperty('logLevel')
   })
 })
 

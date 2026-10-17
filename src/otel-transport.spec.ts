@@ -214,15 +214,13 @@ describe('without otel on latest', () => {
   })
 })
 
-describe('transport severity options on latest', () => {
-  it('logSeverity drops an audit record nothing maps', async () => {
+describe('logSeverity on latest', () => {
+  it('drops an audit record without otel, because nothing gives it a severity', async () => {
     const transport = new TransportLatest({ logSeverity: SeverityNumber.INFO })
-    expect(
-      await emitted({ otel: { mapAuditLevel: false }, transports: [transport] }, (logger, message) => logger.audit(message)),
-    ).toHaveLength(0)
+    expect(await emitted({ transports: [transport] }, (logger, message) => logger.audit(message))).toHaveLength(0)
   })
 
-  it('logSeverity keeps an audit record otel maps', async () => {
+  it('keeps an audit record otel maps', async () => {
     const transport = new TransportLatest({ logSeverity: SeverityNumber.INFO })
     expect(await emitted({ otel: true, transports: [transport] }, (logger, message) => logger.audit(message))).toHaveLength(1)
   })

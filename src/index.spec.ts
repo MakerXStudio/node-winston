@@ -398,12 +398,17 @@ describe('createLogger otel audit level', () => {
     expect((transport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('warn')
   })
 
-  it('maps nothing with mapAuditLevel: false', () => {
+  it('records logLevel and rewrites nothing for a logger whose own levels have no audit', () => {
     const transport = new OpenTelemetryTransportV3({})
-    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: { mapAuditLevel: false } })
-    logger.audit('audit-event')
-    expect((transport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('audit')
-    expect(transport.logs[0]).not.toHaveProperty('logLevel')
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      otel: true,
+      loggerOptions: { levels: { error: 0, info: 1, trace: 2 }, level: 'trace' },
+    })
+    logger.trace('trace-event')
+    expect((transport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('trace')
+    expect(transport.logs[0].logLevel).toBe('trace')
   })
 
   it('maps audit after a loggerOptions.format that colorizes the string level', () => {

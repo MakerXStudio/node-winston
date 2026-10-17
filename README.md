@@ -305,13 +305,14 @@ Pass options as `otel: { … }`.
 
 | Option               | Default | Description                                                                                                                                                                                                                     |
 | -------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mapAuditLevel`      | `true`  | Exports an `audit` record at `info` severity and copies every record's level onto `logLevel`. See [Audit severity](#audit-severity).                                                                                            |
 | `maxAttributeLength` | none    | The longest string the format writes. A longer one is cut short and ends in `[Truncated]`. By default every string is written whole. Strings the record already held are never cut.                                             |
 | `replacer`           | none    | `JSON.stringify` replacer for every value the format stringifies, `errorDetail` included. It is called with the object that holds the value as `this`, so it can decide on a property from the other properties of that object. |
 
 ### Audit severity
 
-OpenTelemetry's log spec has no severity for the custom `audit` level. Azure Monitor ignores a record without a severity, and a `logSeverity` filter drops it. So the format exports an `audit` record at `info` severity, and copies every record's level onto `logLevel` so that the original survives. In Azure Log Analytics, query it as `customDimensions.logLevel == "audit"`.
+OpenTelemetry's log spec has no severity for the custom `audit` level. Azure Monitor ignores a record without a severity, and a `logSeverity` filter drops it. So the format exports an `audit` record at `info` severity. A logger whose levels have no `audit` has nothing to rewrite.
+
+The format also copies every record's level onto `logLevel`. App Insights stores only a coarse severity, which puts `audit` with `info` and `debug` with `verbose`, so `logLevel` is how to tell them apart. In Azure Log Analytics, query `customDimensions.logLevel == "audit"`.
 
 The format runs on the OpenTelemetry transport only, after that transport's level filter. A logger or transport set to `level: 'audit'` keeps audit records, and the console still shows `"level": "audit"`.
 
@@ -494,7 +495,7 @@ Breaking changes:
 | 2.x                                                                                                                                                                       | 3.0                                                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `flatten: 'otel'` or `flatten: true`, with `mapAuditLevelForOtel: true`                                                                                                   | `otel: true`                                                                                                                         |
-| `flatten: 'otel'` without `mapAuditLevelForOtel`                                                                                                                          | `otel: { mapAuditLevel: false }` for the same attributes, or `otel: true` to also map `audit`                                        |
+| `flatten: 'otel'` without `mapAuditLevelForOtel`                                                                                                                          | `otel: true`. Records also get `logLevel`, and `audit` is exported at `info` severity.                                               |
 | `flattenReplacer: r`                                                                                                                                                      | `otel: { replacer: r }`                                                                                                              |
 | An `OpenTelemetryTransportV3` you add yourself, with `otelAttributesFormat()` or `jsonStringifyValuesFormat()`, and `disableLogSending: true` on `WinstonInstrumentation` | Remove the transport and `disableLogSending`, and use `otel: true`. See [Setup](#setup).                                             |
 | A transport before 0.29                                                                                                                                                   | Move the transport and the SDK to 0.29 or later. If you cannot move yet, stay on 2.x.                                                |
@@ -502,13 +503,13 @@ Breaking changes:
 
 - `@opentelemetry/winston-transport` is an optional peer dependency at `>=0.29`. npm 7 and later refuse to install alongside an older transport, and pnpm and Yarn warn. Consumers that do not ship logs through OpenTelemetry are unaffected.
 - `otel` shapes the OpenTelemetry transport only. The console and other transports keep nested values and `level: 'audit'`, so a local `flatten: false` is no longer needed. A logger or transport set to `level: 'audit'` is allowed.
-- `otelAttributesFormat` maps `audit` to `info` severity and writes `logLevel` by default. Pass `mapAuditLevel: false` to keep the 2.x output of `flatten: 'otel'` without `mapAuditLevelForOtel`.
+- `otelAttributesFormat` always writes `logLevel` and exports `audit` at `info` severity. In 2.x, `flatten: 'otel'` did neither without `mapAuditLevelForOtel`.
 - A `Date` under `otel` is its ISO string, unquoted. `flatten: true` wrote it as a quoted JSON string.
 
 New functionality:
 
 - `otel` finds the transport `WinstonInstrumentation` adds, so the console stays readable while OpenTelemetry receives flat attributes.
-- `otelAttributesFormat` takes `mapAuditLevel` and `maxAttributeLength` options, beside its `replacer`.
+- `otelAttributesFormat` takes a `maxAttributeLength` option, beside its `replacer`.
 - `createErrorSerializer` builds an error serializer that can leave properties out of every error, or write a shared object once.
 
 ## Migrating from v1
