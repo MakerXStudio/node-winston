@@ -18,8 +18,7 @@ export interface OtelAttributesFormatOptions {
 
   /**
    * Exports an `audit` record at `info` severity and copies every record's level onto `logLevel`.
-   * Defaults to `true`. See `mapAuditLevelForOtel` for why. Turn it off for a level map with no
-   * `audit`, or when the transport maps severity itself (`severityMapping`, from transport 0.34).
+   * Defaults to `true`. See `mapAuditLevelForOtel` for why.
    */
   mapAuditLevel?: boolean
 

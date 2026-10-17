@@ -315,15 +315,6 @@ OpenTelemetry's log spec has no severity for the custom `audit` level. Azure Mon
 
 The format runs on the OpenTelemetry transport only, after that transport's level filter. A logger or transport set to `level: 'audit'` keeps audit records, and the console still shows `"level": "audit"`.
 
-From `@opentelemetry/instrumentation-winston` 0.68 and transport 0.34, the transport can map the level itself and keep `severityText: 'audit'`. Give the instrumentation a `severityMapping`, and turn the format's mapping off:
-
-```ts
-new WinstonInstrumentation({ severityMapping: { audit: SeverityNumber.INFO } }) // SeverityNumber from @opentelemetry/api-logs
-createLogger({ otel: { mapAuditLevel: false } })
-```
-
-Turn the mapping off only together with a `severityMapping` for `audit`. Without one, an `audit` record has no severity, and Azure Monitor or a `logSeverity` filter drops it.
-
 ### Record size and privacy
 
 Three options control what a record holds, for errors from any library:
