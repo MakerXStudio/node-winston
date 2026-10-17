@@ -1,32 +1,30 @@
-import { LEVEL } from 'triple-beam'
 import { format } from 'winston'
+import { applyAuditLevelMapping } from './audit-level'
 
 /**
  * OTEL's log spec defines a fixed severity enumeration (trace/debug/info/warn/error/fatal).
- * `@opentelemetry/winston-transport` (auto-installed by `@opentelemetry/instrumentation-winston`)
- * derives `severityText` / `severityNumber` from Winston's triple-beam `LEVEL` symbol and strips
- * the string `level` property before building attributes — so Winston's custom `audit` level
- * arrives at any OTEL backend with `severityNumber: undefined` and no queryable record of the
- * original level. This is most visible on Azure Monitor / Log Analytics (which ignores records
- * without a mapped severity), but applies to any OTEL backend that relies on the spec-defined
- * severity.
+ * `@opentelemetry/winston-transport` derives `severityText` / `severityNumber` from Winston's
+ * triple-beam `LEVEL` symbol and strips the string `level` property before building attributes,
+ * so the custom `audit` level arrives at an OTEL backend with no severity and no queryable
+ * record of the original level. A backend stores such a record with no severity or a default one,
+ * and a transport `logSeverity` filter drops it.
  *
  * This format:
  * - rewrites `info[LEVEL]` from `audit` to `info` so OTEL maps to a known severity tier
  * - copies the original level onto `logLevel` on every record so it survives as an OTEL
- *   attribute (e.g. queryable as `customDimensions.logLevel == "audit"` in Azure Log Analytics)
+ *   attribute (e.g. queryable as `customDimensions.logLevel == "audit"` in Azure Log Analytics).
+ *   A record that already has a string `logLevel` keeps it.
  *
- * The string `info.level` is left as-is — it's only consumed by other winston transports (e.g.
- * our Console transport's JSON output), so leaving it alone keeps local output readable.
+ * The level is read from `info[LEVEL]`, so a format that rewrites the string `info.level`, such as
+ * `format.colorize()`, can run first. The string `info.level` is left as it is, so other
+ * transports still show `audit`.
  *
- * Caveat: because the `LEVEL` symbol also drives transport-level filtering, a logger/transport
- * explicitly set to `level: 'audit'` would drop these records after rewrite (info is more
- * verbose than audit). `createLogger` guards against that by throwing when the option is
- * enabled alongside an `audit`-level logger/console/transport; when using the format
- * standalone, apply the same discipline. Only enable this when shipping logs via OTEL.
+ * `otelAttributesFormat` already does this, so most loggers need only that. Use this format on
+ * its own in a chain you build yourself, for example beside `jsonStringifyValuesFormat`.
+ *
+ * Caveat: the `LEVEL` symbol also drives transport-level filtering. On a transport's own format
+ * the mapping runs after that transport's filter, so it is always safe there. At the logger
+ * level it runs before every transport's filter, so a logger or transport set to `level: 'audit'`
+ * would drop these records (`info` is more verbose than `audit`). Use `'info'` there instead.
  */
-export const mapAuditLevelForOtel = format((info) => {
-  info.logLevel = info.level
-  if (info.level === 'audit') info[LEVEL] = 'info'
-  return info
-})
+export const mapAuditLevelForOtel = format((info) => applyAuditLevelMapping(info))

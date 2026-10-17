@@ -2,7 +2,14 @@ import { LEVEL, SPLAT } from 'triple-beam'
 import { config, format } from 'winston'
 import TransportStream from 'winston-transport'
 import { describe, expect, it } from 'vitest'
-import { createLogger, defaultLevelColors, defaultLevels, winstonDefaultLevelColors, winstonDefaultLevels } from './index'
+import {
+  createErrorSerializer,
+  createLogger,
+  defaultLevelColors,
+  defaultLevels,
+  winstonDefaultLevelColors,
+  winstonDefaultLevels,
+} from './index'
 
 describe('logger', () => {
   it('verbose logs are screened out when level is debug', () => {
@@ -161,13 +168,13 @@ describe('createLogger Date metadata', () => {
     expect(JSON.stringify(parameters)).toBe('["2026-01-02T03:04:05.000Z",1]')
   })
 
-  it('flatten writes a Date in metadata as its ISO string', () => {
-    const transport = new InMemoryTransport({})
-    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], flatten: true })
+  it('otel writes a Date in metadata as its ISO string, unquoted', () => {
+    const transport = new OpenTelemetryTransportV3({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: true })
     logger.info('db query', { parameters: [when, 1], at: when })
     const info = transport.logs[0] as Record<string, unknown>
     expect(info.parameters).toBe('["2026-01-02T03:04:05.000Z",1]')
-    expect(info.at).toBe('"2026-01-02T03:04:05.000Z"')
+    expect(info.at).toBe('2026-01-02T03:04:05.000Z')
   })
 
   it('a Date survives redaction beside a redacted key', () => {
@@ -304,123 +311,156 @@ describe('createLogger child loggers', () => {
   })
 })
 
-describe('createLogger flatten', () => {
-  it('stringifies object and array values and leaves scalars alone', () => {
-    const transport = new InMemoryTransport({})
-    const logger = createLogger({
-      consoleOptions: { silent: true },
-      transports: [transport],
-      flatten: true,
-    })
-    logger.info('hello', { obj: { a: 1 }, arr: [1, 2], count: 3, flag: true, text: 'literal' })
-    const info = transport.logs[0] as Record<string, unknown>
-    expect(info.obj).toBe('{"a":1}')
-    expect(info.arr).toBe('[1,2]')
-    expect(info.count).toBe(3)
-    expect(info.flag).toBe(true)
-    expect(info.text).toBe('literal')
+describe('createLogger otel', () => {
+  it('gives the format to an OpenTelemetry transport and leaves other transports nested', () => {
+    const otelTransport = new OpenTelemetryTransportV3({})
+    const sibling = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [otelTransport, sibling], otel: true })
+    logger.error('failed', { error: Object.assign(new Error('boom'), { statusCode: 500 }), obj: { a: 1 }, count: 3 })
+    expect(otelTransport.logs[0]).toMatchObject({ obj: '{"a":1}', count: 3, error: { name: 'Error', message: 'boom' } })
+    expect(JSON.parse(otelTransport.logs[0].errorDetail as string)).toEqual({ statusCode: 500 })
+    expect(sibling.logs[0]).toMatchObject({ obj: { a: 1 }, error: { message: 'boom', statusCode: 500 } })
+    expect(sibling.logs[0]).not.toHaveProperty('errorDetail')
   })
 
-  it('forwards flattenReplacer to JSON.stringify for each value', () => {
-    const transport = new InMemoryTransport({})
+  it('leaves an OpenTelemetry transport that has its own format alone', () => {
+    const own = format((info) => Object.assign(info, { shapedBy: 'own' }))
+    const otelTransport = new OpenTelemetryTransportV3({ format: own() })
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [otelTransport], otel: true })
+    logger.info('hello', { obj: { a: 1 } })
+    expect(otelTransport.logs[0]).toMatchObject({ shapedBy: 'own', obj: { a: 1 } })
+  })
+
+  it('passes its options to the format, replacer included', () => {
+    const transport = new OpenTelemetryTransportV3({})
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      flatten: true,
-      flattenReplacer: (key, value) => (key === 'secret' ? '<hidden>' : value),
+      otel: { replacer: (key, value: unknown) => (key === 'secret' ? '<hidden>' : value) },
     })
     logger.info('hello', { data: { secret: 'abc', other: 'def' } })
     const { data } = transport.logs[0] as { data: string }
-    const parsed = JSON.parse(data) as { secret: string; other: string }
-    expect(parsed.secret).toBe('<hidden>')
-    expect(parsed.other).toBe('def')
+    expect(JSON.parse(data)).toEqual({ secret: '<hidden>', other: 'def' })
   })
 
-  it('runs after loggerOptions.format so injected object values are stringified', () => {
-    const transport = new InMemoryTransport({})
-    const injectFormat = format((info) => {
-      info.injected = { a: 1 }
-      return info
-    })
+  it('shapes the record after the logger-level formats, redaction and loggerOptions.format included', () => {
+    const transport = new OpenTelemetryTransportV3({})
+    const inject = format((info) => Object.assign(info, { injected: { a: 1 } }))
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      flatten: true,
-      loggerOptions: { format: injectFormat() },
+      otel: true,
+      redactPaths: ['body'],
+      loggerOptions: { format: inject() },
     })
-    logger.info('hello')
-    expect((transport.logs[0] as { injected: unknown }).injected).toBe('{"a":1}')
+    logger.error('failed', { error: Object.assign(new Error('boom'), { body: { prompt: 'secret' }, statusCode: 500 }) })
+    expect(JSON.parse(transport.logs[0].errorDetail as string)).toEqual({ body: '<redacted>', statusCode: 500 })
+    expect(transport.logs[0].injected).toBe('{"a":1}')
+  })
+
+  it('leaves out error properties with an errorSerializer from createErrorSerializer', () => {
+    const transport = new OpenTelemetryTransportV3({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      otel: true,
+      errorSerializer: createErrorSerializer({ omit: (key) => key === 'headers' }),
+    })
+    logger.error('failed', { error: Object.assign(new Error('boom'), { headers: { a: '1' }, statusCode: 500 }) })
+    expect(JSON.parse(transport.logs[0].errorDetail as string)).toEqual({ statusCode: 500 })
+  })
+
+  it('leaves the OpenTelemetry transport nested without it', () => {
+    const transport = new OpenTelemetryTransportV3({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+    logger.info('hello', { obj: { a: 1 } })
+    expect(transport.logs[0].obj).toEqual({ a: 1 })
   })
 })
 
-describe('createLogger mapAuditLevelForOtel', () => {
-  it('rewrites the LEVEL symbol from audit to info, preserves the original on logLevel, and leaves the string level alone', () => {
-    const transport = new InMemoryTransport({})
-    const logger = createLogger({
-      consoleOptions: { silent: true },
-      transports: [transport],
-      mapAuditLevelForOtel: true,
-    })
+describe('createLogger otel audit level', () => {
+  it('exports audit at info on the OpenTelemetry transport only, with logLevel audit', () => {
+    const otelTransport = new OpenTelemetryTransportV3({})
+    const sibling = new InMemoryTransport({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [otelTransport, sibling], otel: true })
     logger.audit('audit-event', { actor: 'user-1' })
-    const info = transport.logs[0] as Record<string | symbol, unknown>
-    expect(info[LEVEL]).toBe('info')
-    expect(info.level).toBe('audit')
-    expect(info.logLevel).toBe('audit')
-    expect(info.actor).toBe('user-1')
+    expect(otelTransport.logs[0]).toMatchObject({ level: 'audit', logLevel: 'audit', actor: 'user-1' })
+    expect((otelTransport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('info')
+    expect((sibling.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('audit')
+    expect(sibling.logs[0]).not.toHaveProperty('logLevel')
   })
 
-  it('leaves non-audit levels untouched but still records logLevel', () => {
-    const transport = new InMemoryTransport({})
+  it('records logLevel on every other level and leaves its LEVEL alone', () => {
+    const transport = new OpenTelemetryTransportV3({})
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport], otel: true })
+    logger.warn('heads-up')
+    expect(transport.logs[0].logLevel).toBe('warn')
+    expect((transport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('warn')
+  })
+
+  it('records logLevel and rewrites nothing for a logger whose own levels have no audit', () => {
+    const transport = new OpenTelemetryTransportV3({})
     const logger = createLogger({
       consoleOptions: { silent: true },
       transports: [transport],
-      mapAuditLevelForOtel: true,
+      otel: true,
+      loggerOptions: { levels: { error: 0, info: 1, trace: 2 }, level: 'trace' },
     })
-    logger.warn('heads-up')
-    const info = transport.logs[0] as Record<string | symbol, unknown>
-    expect(info.level).toBe('warn')
-    expect(info[LEVEL]).toBe('warn')
-    expect(info.logLevel).toBe('warn')
+    logger.trace('trace-event')
+    expect((transport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('trace')
+    expect(transport.logs[0].logLevel).toBe('trace')
   })
 
-  it('is opt-in — when disabled, audit records keep their level and no logLevel is added', () => {
-    const transport = new InMemoryTransport({})
-    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+  it('maps audit after a loggerOptions.format that colorizes the string level', () => {
+    const transport = new OpenTelemetryTransportV3({})
+    const logger = createLogger({
+      consoleOptions: { silent: true },
+      transports: [transport],
+      otel: true,
+      loggerOptions: { format: format.colorize() },
+    })
     logger.audit('audit-event')
-    const info = transport.logs[0] as Record<string | symbol, unknown>
-    expect(info.level).toBe('audit')
-    expect(info[LEVEL]).toBe('audit')
-    expect(info.logLevel).toBeUndefined()
+    expect((transport.logs[0] as Record<symbol, unknown>)[LEVEL]).toBe('info')
+    expect(transport.logs[0].logLevel).toBe('audit')
   })
 
-  it('throws when loggerOptions.level is audit (records would be silently dropped after rewrite)', () => {
-    expect(() =>
-      createLogger({
-        mapAuditLevelForOtel: true,
-        consoleOptions: { silent: true },
-        loggerOptions: { level: 'audit' },
-      }),
-    ).toThrow(/loggerOptions\.level/)
+  it('keeps audit records when the logger, the console or the OpenTelemetry transport is set to level audit', () => {
+    const otelTransport = new OpenTelemetryTransportV3({ level: 'audit' })
+    const other = new InMemoryTransport({ level: 'audit' })
+    const logger = createLogger({
+      consoleOptions: { silent: true, level: 'audit' },
+      transports: [otelTransport, other],
+      otel: true,
+      loggerOptions: { level: 'audit' },
+    })
+    logger.audit('audit-event')
+    logger.info('info-event')
+    expect(otelTransport.logs.map((info) => info.message)).toEqual(['audit-event'])
+    expect(otelTransport.logs[0].logLevel).toBe('audit')
+    expect(other.logs.map((info) => info.message)).toEqual(['audit-event'])
+  })
+})
+
+describe('createLogger removed 2.x options', () => {
+  it.each([
+    ['flatten', true],
+    ['flatten', false],
+    ['flattenReplacer', () => undefined],
+    ['mapAuditLevelForOtel', true],
+  ])('throws for %s, pointing to the migration guide', (key, value) => {
+    const options = { consoleOptions: { silent: true }, [key]: value }
+    expect(() => createLogger(options)).toThrow(/Migrating from v2/)
   })
 
-  it('throws when consoleOptions.level is audit', () => {
+  it('rejects them at compile time in an object literal', () => {
     expect(() =>
-      createLogger({
-        mapAuditLevelForOtel: true,
-        consoleOptions: { level: 'audit', silent: true },
-      }),
-    ).toThrow(/consoleOptions\.level/)
-  })
-
-  it('throws when any supplied transport has level audit', () => {
-    const transport = new InMemoryTransport({ level: 'audit' })
+      // @ts-expect-error removed in 3.0
+      createLogger({ consoleOptions: { silent: true }, flatten: 'otel' }),
+    ).toThrow(/flatten/)
     expect(() =>
-      createLogger({
-        mapAuditLevelForOtel: true,
-        consoleOptions: { silent: true },
-        transports: [transport],
-      }),
-    ).toThrow(/transports\[0\]\.level/)
+      // @ts-expect-error removed in 3.0
+      createLogger({ consoleOptions: { silent: true }, mapAuditLevelForOtel: true }),
+    ).toThrow(/mapAuditLevelForOtel/)
   })
 })
 
@@ -671,15 +711,14 @@ describe('createLogger DOMException', () => {
       transports: [transport],
       omitPaths: ['service'],
       redactPaths: ['authorization'],
-      mapAuditLevelForOtel: true,
-      flatten: true,
+      otel: true,
     })
 
     logger.error('everything on', { service: 'svc', authorization: 'Bearer abc', error: aborted() })
 
     expect(transport.logs[0].service).toBeUndefined()
     expect(transport.logs[0].authorization).toBe('<redacted>')
-    expect(transport.logs[0].error).toContain('TimeoutError')
+    expect(transport.logs[0].error).toMatchObject({ name: 'TimeoutError', message: 'the operation timed out' })
   })
 
   it('serialises one with a configured errorSerializer, wherever it sits in the record', () => {
@@ -717,3 +756,6 @@ class InMemoryTransport extends TransportStream {
 
   close(): void {}
 }
+
+/** Named as `@opentelemetry/winston-transport`'s class is, which is how `otel` finds the transport. */
+class OpenTelemetryTransportV3 extends InMemoryTransport {}

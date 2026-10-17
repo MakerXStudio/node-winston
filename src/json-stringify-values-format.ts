@@ -3,8 +3,10 @@ import { format } from 'winston'
 
 /**
  * Serialises all top-level object values on the log info to JSON strings, producing a flat
- * `{ key: string }` shape suitable for transports and aggregators that expect scalar values
- * (e.g. OTEL + Azure Log Analytics).
+ * `{ key: string }` shape for transports and aggregators that expect scalar values.
+ *
+ * Do not use it for `@opentelemetry/winston-transport`: from 0.29 the transport records an error
+ * written as a JSON string as one `exception.message`. Use `otelAttributesFormat` there.
  *
  * Accepts an optional `replacer` forwarded to `JSON.stringify` for each value.
  *

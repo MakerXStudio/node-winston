@@ -34,4 +34,26 @@ export default [
       },
     },
   },
+  {
+    // The OpenTelemetry transport is an optional peer. Importing it, or `@opentelemetry/api-logs`, from
+    // the library would make it required and can add a second `api-logs` copy to an app. A transport
+    // that gets its logger from a second copy before the SDK registers its provider writes every line
+    // to a no-op logger. Specs and the fixture under src/tests import the real packages, which are
+    // dev dependencies.
+    files: ['src/**/*.ts'],
+    ignores: ['src/**/*.spec.ts', 'src/tests/**'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@opentelemetry/*', 'otel-winston-transport-*'],
+              message: 'The library must not depend on OpenTelemetry packages. See the comment in eslint.config.mjs.',
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]

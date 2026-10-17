@@ -8,15 +8,13 @@ import {
   transports,
 } from 'winston'
 import * as Transport from 'winston-transport'
-import { jsonStringifyValuesFormat } from './json-stringify-values-format'
-import { otelAttributesFormat } from './otel-attributes-format'
+import { otelAttributesFormat, OtelAttributesFormatOptions } from './otel-attributes-format'
 import { omitFormat } from './omit-format'
 import { omitNilFormat } from './omit-nil-format'
 import { prettyConsoleFormat } from './pretty-console-format'
 import { redactFormat } from './redact-format'
 import { createSerializableErrorReplacer, ErrorSerializer, serializeError } from './serialize-error'
 import { serializeErrorFormat } from './serialize-error-format'
-import { mapAuditLevelForOtel } from './map-audit-level-for-otel'
 import { withNormalizedErrorArgs } from './normalize-error-args'
 
 // `winston/lib/winston/transports` is a CJS deep import that can't be consumed from ESM: it's a
@@ -155,37 +153,16 @@ export interface CreateLoggerOptions {
   redactedValue?: string
 
   /**
-   * Appends a flattening format as the final logger-level format — applied after every other
-   * logger-level format (including any `loggerOptions.format`), so it affects every transport.
+   * Shapes what `@opentelemetry/winston-transport` 0.29 and later receives. Each
+   * `OpenTelemetryTransportV3` on the logger that has no format of its own gets
+   * {@link otelAttributesFormat}: the transport `WinstonInstrumentation` adds, and any passed in
+   * `transports`. Other transports, the console included, keep their nested output. `true` uses the
+   * format's defaults, and an object is passed to the format as its options.
    *
-   * - `'otel'` appends {@link otelAttributesFormat}: the shape `@opentelemetry/winston-transport` 0.29
-   *   and later needs. An `err`/`error` value stays an object holding `name`, `message` and `stack`,
-   *   which the transport records as the exception, the rest of the error goes to `<key>Detail` as
-   *   JSON, and every other object value becomes a JSON string.
-   * - `true` appends `jsonStringifyValuesFormat`, serialising every top-level object value — errors
-   *   included — to a JSON string. For a transport before 0.29; from 0.29 the transport records a
-   *   stringified error as one `exception.message` holding the whole JSON.
-   *
-   * To flatten only what one transport receives, put the format on that transport instead.
+   * The format runs after the transport's level filter, so its audit mapping never drops a record.
+   * A transport added later with `logger.add` is not shaped: give it `otelAttributesFormat()`.
    */
-  flatten?: boolean | 'otel'
-
-  /**
-   * Optional `JSON.stringify` replacer forwarded to `flatten` when serialising each value.
-   * Applied in both `flatten` modes.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  flattenReplacer?: (this: any, key: string, value: any) => any
-
-  /**
-   * When `true`, prepends `mapAuditLevelForOtel` to the logger-level format chain. Rewrites the
-   * triple-beam `LEVEL` symbol from `audit` to `info` so OTEL maps the record onto a known severity
-   * tier, and copies the original level onto a `logLevel` property so it survives as an OTEL attribute
-   * (the OTEL winston-transport strips the string `level`). Enable when shipping logs via OTEL — most
-   * visibly for Azure Monitor / Log Analytics, but applies to any OTEL backend that relies on the
-   * spec-defined severity.
-   */
-  mapAuditLevelForOtel?: boolean
+  otel?: boolean | OtelAttributesFormatOptions
 
   /**
    * Custom serializer used whenever an `Error` instance is encountered: by the logger-level
@@ -194,16 +171,51 @@ export interface CreateLoggerOptions {
    * replacer (safety net for errors that slip through). Defaults to the library's
    * `serializeError`, which captures `name`/`message`/`stack`/`code`/`cause`/`errors` even when
    * non-enumerable, walks own enumerable properties, and is safe against circular references.
+   * Build one with `createErrorSerializer` to leave properties out of every error.
    */
   errorSerializer?: ErrorSerializer
 
   /**
    * Winston `LoggerOptions` forwarded to the underlying logger (e.g. `level`, `defaultMeta`).
    * `transports` is managed by this library; pass extras via `transports` instead.
-   * A `format` provided here is appended after the library's logger-level formats, but still runs
-   * before `flatten` (which is always last when enabled).
+   * A `format` provided here is appended after the library's logger-level formats.
    */
   loggerOptions?: Omit<LoggerOptions, 'transports'>
+}
+
+/** 2.x options that 3.0 removed. Each maps onto `otel`. See "Migrating from v2" in the README. */
+const REMOVED_OPTIONS = ['flatten', 'flattenReplacer', 'mapAuditLevelForOtel'] as const
+
+/**
+ * Throws for an option that 3.0 removed. TypeScript rejects one in an object literal, but not in
+ * options built from config or spread from another object. Ignoring it would send OpenTelemetry
+ * records nested, with no warning.
+ */
+const rejectRemovedOptions = (options: CreateLoggerOptions) => {
+  const given = REMOVED_OPTIONS.filter((key) => (options as Record<string, unknown>)[key] !== undefined)
+  if (given.length === 0) return
+  throw new Error(
+    `createLogger no longer accepts ${given.join(', ')}. Use the \`otel\` option. ` +
+      `See "Migrating from v2" in the @makerx/node-winston README.`,
+  )
+}
+
+/**
+ * The class `@opentelemetry/winston-transport` exports. It is matched by name because this library
+ * does not depend on the transport, which is an optional peer.
+ */
+const OTEL_TRANSPORT_CLASS = 'OpenTelemetryTransportV3'
+
+/**
+ * Gives each OpenTelemetry transport on the logger that has no format of its own the
+ * `otelAttributesFormat`. `WinstonInstrumentation` adds its transport while winston configures the
+ * logger, so it is on the logger by the time winston's `createLogger` returns.
+ */
+const shapeOtelTransports = (logger: WinstonLogger, otelOptions: OtelAttributesFormatOptions) => {
+  const otelFormat = otelAttributesFormat(otelOptions)
+  for (const transport of logger.transports) {
+    if (transport.constructor?.name === OTEL_TRANSPORT_CLASS && !transport.format) transport.format = otelFormat
+  }
 }
 
 export const createConsoleTransport = ({
@@ -237,15 +249,11 @@ export function createLogger<const L extends Record<string, number>>(
 export function createLogger(options: CreateLoggerOptions): Logger
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createLogger(options: CreateLoggerOptions): any {
-  const {
-    omitPaths,
-    redactPaths,
-    redactedValue = '<redacted>',
-    flatten,
-    flattenReplacer,
-    errorSerializer,
-    mapAuditLevelForOtel: mapAuditForOtel,
-  } = options
+  const { omitPaths, redactPaths, redactedValue = '<redacted>', errorSerializer, otel } = options
+
+  rejectRemovedOptions(options)
+
+  const otelOptions: OtelAttributesFormatOptions | undefined = otel === true ? {} : otel || undefined
 
   // register default colours on first use of a known level set so `colorize` / pretty output works.
   // Detected by referential equality: an unknown `levels` map means the caller is responsible for
@@ -254,25 +262,6 @@ export function createLogger(options: CreateLoggerOptions): any {
   if (!userLevels || userLevels === defaultLevels) registerDefaultColors()
   else if (userLevels === winstonDefaultLevels) registerWinstonDefaultColors()
 
-  // Guard against silent audit-record loss: the format rewrites the LEVEL symbol from 'audit' to 'info',
-  // which the filter on any transport set to level:'audit' would then drop (info is more verbose than audit).
-  if (mapAuditForOtel) {
-    const misconfigured: string[] = []
-    if (options.loggerOptions?.level === 'audit') misconfigured.push('loggerOptions.level')
-    if (options.consoleOptions?.level === 'audit') misconfigured.push('consoleOptions.level')
-    options.transports?.forEach((t, i) => {
-      if (t.level === 'audit') misconfigured.push(`transports[${i}].level`)
-    })
-    if (misconfigured.length > 0) {
-      throw new Error(
-        `Set ${misconfigured.join(', ')} to 'info' (or a more verbose level) instead of 'audit'. ` +
-          `mapAuditLevelForOtel rewrites the triple-beam LEVEL symbol from 'audit' to 'info' so ` +
-          `OTEL maps the record onto a known severity tier — an 'audit'-level filter would then ` +
-          `drop those records after the rewrite.`,
-      )
-    }
-  }
-
   // aggregate transports
   const consoleTransport = createConsoleTransport(options)
   const transports: Transport[] = [consoleTransport]
@@ -280,7 +269,6 @@ export function createLogger(options: CreateLoggerOptions): any {
 
   // logger-level formats apply to all transports
   const loggerFormats: Format[] = [serializeErrorFormat({ serializer: errorSerializer })]
-  if (mapAuditForOtel) loggerFormats.push(mapAuditLevelForOtel())
   if (omitPaths) loggerFormats.push(omitFormat({ paths: omitPaths }))
   // `errorSerializer` is passed for consistency rather than for effect: `serializeErrorFormat` runs
   // first and leaves no live `Error` behind, so redaction has nothing left to substitute here. It
@@ -288,9 +276,6 @@ export function createLogger(options: CreateLoggerOptions): any {
   // path ever does let one through.
   if (redactPaths) loggerFormats.push(redactFormat({ paths: redactPaths, redactedValue, errorSerializer }))
   if (options.loggerOptions?.format) loggerFormats.push(options.loggerOptions.format)
-  // flatten is applied last so all prior transformations are captured in the stringified values
-  if (flatten === 'otel') loggerFormats.push(otelAttributesFormat({ replacer: flattenReplacer }))
-  else if (flatten) loggerFormats.push(jsonStringifyValuesFormat({ replacer: flattenReplacer }))
 
   // create logger options using supplied options + transports; loggerOptions.levels (if any) overrides defaultLevels
   const loggerOptions: LoggerOptions = {
@@ -300,7 +285,10 @@ export function createLogger(options: CreateLoggerOptions): any {
     transports,
   }
 
+  const logger = winstonCreateLogger(loggerOptions)
+  if (otelOptions) shapeOtelTransports(logger, otelOptions)
+
   // Wrapped rather than returned bare: winston branches three ways on an `Error` argument, and only
   // one of the shapes it produces needs no repair. See {@link withNormalizedErrorArgs}.
-  return withNormalizedErrorArgs(winstonCreateLogger(loggerOptions), Object.keys(loggerOptions.levels ?? defaultLevels))
+  return withNormalizedErrorArgs(logger, Object.keys(loggerOptions.levels ?? defaultLevels))
 }

@@ -101,3 +101,120 @@ describe('otelAttributesFormat — other values', () => {
     expect(run({ obj: { a: 1 } })[LEVEL]).toBe('error')
   })
 })
+
+describe('otelAttributesFormat — level', () => {
+  const at = (level: string) => run({ [LEVEL]: level, level })
+
+  it('exports an audit record at info severity and keeps the original on logLevel', () => {
+    const result = at('audit')
+    expect(result[LEVEL]).toBe('info')
+    expect(result.level).toBe('audit')
+    expect(result.logLevel).toBe('audit')
+  })
+
+  it('records logLevel on every other level and leaves its LEVEL alone', () => {
+    const result = at('warn')
+    expect(result[LEVEL]).toBe('warn')
+    expect(result.logLevel).toBe('warn')
+  })
+
+  it('reads the level from LEVEL, so a colorized string level still maps', () => {
+    const result = run({ [LEVEL]: 'audit', level: '\u001b[35maudit\u001b[39m' })
+    expect(result[LEVEL]).toBe('info')
+    expect(result.logLevel).toBe('audit')
+  })
+
+  it('keeps a string logLevel the record already has', () => {
+    expect(run({ [LEVEL]: 'audit', level: 'audit', logLevel: 'custom' }).logLevel).toBe('custom')
+  })
+})
+
+/** A serialized error holding other errors: a cause, a list of attempts, and the latest attempt again. */
+const withAttempts = () => {
+  const attempt = (n: number) => serialized({ message: `attempt ${n}`, headers: { 'x-request-id': `req-${n}` } })
+  const attempts = [attempt(1), attempt(2)]
+  return serialized({ cause: serialized({ message: 'root' }), attempts, latest: attempts[1] })
+}
+
+describe('otelAttributesFormat — replacer', () => {
+  it('is called with the holding object as `this`, so it can leave a property out by its siblings', () => {
+    function replacer(this: Record<string, unknown>, key: string, value: unknown) {
+      if (key === 'headers') return undefined
+      if (key === 'latest' && Array.isArray(this.attempts)) return undefined
+      return value
+    }
+    const detail = JSON.parse(run({ error: withAttempts() }, { replacer }).errorDetail as string) as Record<string, unknown>
+    expect(detail).not.toHaveProperty('latest')
+    expect(detail.attempts).toEqual([
+      { name: 'Error', message: 'attempt 1', stack: 'Error: boom\n    at x' },
+      { name: 'Error', message: 'attempt 2', stack: 'Error: boom\n    at x' },
+    ])
+  })
+})
+
+describe('otelAttributesFormat — length cap', () => {
+  const long = 'x'.repeat(20_000)
+
+  it('writes every string whole by default', () => {
+    expect(JSON.parse(run({ ctx: { body: long } }).ctx as string)).toEqual({ body: long })
+    expect(JSON.parse(run({ error: serialized({ body: long }) }).errorDetail as string)).toEqual({ body: long })
+  })
+
+  it('cuts errorDetail to maxAttributeLength, ending in [Truncated]', () => {
+    const detail = run({ error: serialized({ body: long }) }, { maxAttributeLength: 8192 }).errorDetail as string
+    expect(detail).toHaveLength(8192)
+    expect(detail.endsWith('[Truncated]')).toBe(true)
+  })
+
+  it('cuts other stringified values too', () => {
+    const value = run({ ctx: { body: long } }, { maxAttributeLength: 100 }).ctx as string
+    expect(value).toHaveLength(100)
+    expect(value.endsWith('[Truncated]')).toBe(true)
+  })
+
+  it('leaves strings the caller wrote, the message and the exception whole', () => {
+    const result = run({ message: long, text: long, error: serialized({ message: long, stack: long }) }, { maxAttributeLength: 100 })
+    expect(result.message).toBe(long)
+    expect(result.text).toBe(long)
+    expect(result.error).toMatchObject({ message: long, stack: long })
+  })
+
+  // `{"body":"` is 9 characters and each emoji is 2, so at 31 the cut falls inside a pair and at 30
+  // it falls between two pairs.
+  it.each([30, 31])('does not split a surrogate pair at maxAttributeLength %i', (max) => {
+    const value = run({ ctx: { body: '😀'.repeat(100) } }, { maxAttributeLength: max }).ctx as string
+    expect(value.length).toBeLessThanOrEqual(max)
+    expect(value.endsWith('[Truncated]')).toBe(true)
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(value)).toBe(false)
+  })
+
+  it('writes as much of the marker as fits when maxAttributeLength is shorter than it', () => {
+    expect(run({ ctx: { body: 'x'.repeat(100) } }, { maxAttributeLength: 5 }).ctx).toBe('[Trun')
+  })
+
+  it('cuts nothing when maxAttributeLength is negative or NaN', () => {
+    expect(JSON.parse(run({ ctx: { body: 'x' } }, { maxAttributeLength: -1 }).ctx as string)).toEqual({ body: 'x' })
+    expect(JSON.parse(run({ ctx: { body: 'x' } }, { maxAttributeLength: NaN }).ctx as string)).toEqual({ body: 'x' })
+  })
+})
+
+describe('otelAttributesFormat — shared state', () => {
+  it('changes no nested value, so other transports keep their own objects', () => {
+    const error = withAttempts()
+    const ctx = { inner: { a: 1 }, list: [{ b: 2 }] }
+    const before = structuredClone({ error, ctx })
+    run({ error, ctx })
+    expect({ error, ctx }).toEqual(before)
+  })
+
+  it('applied twice writes the same record as applied once', () => {
+    const fmt = otelAttributesFormat()
+    const input = { [LEVEL]: 'audit', level: 'audit', message: 'm', error: withAttempts(), ctx: { a: 1 } } as unknown as TransformableInfo
+    const once = fmt.transform(input, fmt.options) as TransformableInfo
+    const onceCopy = { ...once }
+    const twice = fmt.transform(once, fmt.options) as TransformableInfo
+    expect(twice).toEqual(onceCopy)
+    expect(twice[LEVEL]).toBe('info')
+    expect(twice.logLevel).toBe('audit')
+  })
+})

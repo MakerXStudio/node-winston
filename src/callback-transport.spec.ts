@@ -122,8 +122,8 @@ describe('CallbackTransport', () => {
       ),
     )
 
-    // Simulate `mapAuditLevelForOtel`: LEVEL symbol rewritten from 'audit' to 'info', string
-    // `level` left untouched. winston-transport's stock filter would drop this; ours must not.
+    // As `mapAuditLevelForOtel` leaves a record: LEVEL rewritten from 'audit' to 'info', the string
+    // `level` untouched. winston-transport's stock filter would drop this record, and ours must not.
     const audit = { [LEVEL]: 'info', level: 'audit', message: 'audit-event' } as TransformableInfo
 
     transport.log!(audit, () => {})
@@ -139,13 +139,13 @@ describe('CallbackTransport', () => {
       () => {},
       { level: 'audit' },
     )
-    // We intercept `level` in our constructor so `createLogger`'s mapAuditLevelForOtel guard
-    // (which reads `transport.level`) does not trip when the transport is configured for audit.
+    // The constructor keeps `level` for itself, so the base class's filter, which reads the LEVEL
+    // symbol, never runs.
     expect(transport.level).toBeUndefined()
   })
 
-  it('routes audit records through createLogger with mapAuditLevelForOtel and level: audit', async () => {
-    const { createLogger } = await import('./index')
+  it('routes audit records at level audit after a logger-level mapAuditLevelForOtel', async () => {
+    const { createLogger, mapAuditLevelForOtel } = await import('./index')
     const received: TransformedInfo[] = []
     const transport = new CallbackTransport(
       async (info) => {
@@ -155,11 +155,11 @@ describe('CallbackTransport', () => {
       { level: 'audit' },
     )
 
-    // Without the level interception this combination would either throw at construction
-    // (createLogger guard) or silently drop the record (LEVEL rewrite + symbol-based filter).
+    // The mapping rewrites LEVEL before any transport filters, so a filter on LEVEL would drop the
+    // audit record.
     const logger = createLogger({
       consoleOptions: { silent: true },
-      mapAuditLevelForOtel: true,
+      loggerOptions: { format: mapAuditLevelForOtel() },
       transports: [transport],
     })
 
@@ -170,5 +170,63 @@ describe('CallbackTransport', () => {
     await transport.close!()
 
     expect(received.map((info) => info.message)).toEqual(['audit-event'])
+  })
+
+  it('forwards only the levels in onlyLevels', async () => {
+    const received: TransformedInfo[] = []
+    const transport = attachLevels(
+      new CallbackTransport(
+        async (info) => {
+          received.push(info)
+        },
+        () => {},
+        { onlyLevels: ['audit'] },
+      ),
+    )
+
+    for (const level of ['error', 'warn', 'audit', 'info']) transport.log!(buildInfo(level, `${level}-event`), () => {})
+    await transport.close!()
+
+    expect(received.map((info) => info.message)).toEqual(['audit-event'])
+  })
+
+  it('forwards only audit records through createLogger with onlyLevels, so an error it logs is not sent back to it', async () => {
+    const { createLogger } = await import('./index')
+    const received: TransformedInfo[] = []
+    const transport = new CallbackTransport(
+      async (info) => {
+        received.push(info)
+      },
+      (message, ...args) => logger.error(message, ...args),
+      { onlyLevels: ['audit'] },
+    )
+    const logger = createLogger({ consoleOptions: { silent: true }, transports: [transport] })
+
+    logger.error('error-event')
+    logger.audit('audit-event', { actor: 'a-1' })
+    logger.info('info-event')
+    await transport.close!()
+
+    expect(received).toEqual([{ level: 'audit', message: 'audit-event', meta: { actor: 'a-1' } }])
+  })
+
+  it('stops waiting at closeTimeoutMs and reports the dispatches still running', async () => {
+    const logError = vi.fn()
+    const transport = new CallbackTransport(() => new Promise(() => {}), logError, { closeTimeoutMs: 20 })
+
+    transport.log!(buildInfo('info', 'never-finishes'), () => {})
+    await transport.close!()
+
+    expect(logError).toHaveBeenCalledWith('CallbackTransport closed after 20 ms with 1 dispatch(es) still running')
+  })
+
+  it('reports nothing when dispatches finish within closeTimeoutMs', async () => {
+    const logError = vi.fn()
+    const transport = new CallbackTransport(() => Promise.resolve(), logError, { closeTimeoutMs: 1_000 })
+
+    transport.log!(buildInfo('info', 'quick'), () => {})
+    await transport.close!()
+
+    expect(logError).not.toHaveBeenCalled()
   })
 })

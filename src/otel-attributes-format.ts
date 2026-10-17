@@ -1,13 +1,57 @@
 import { format } from 'winston'
+import { applyAuditLevelMapping } from './audit-level'
 import { serializeError } from './serialize-error'
 import { serializesItself } from './serializes-itself'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Replacer = (this: any, key: string, value: any) => any
 
+const TRUNCATED = '[Truncated]'
+
 export interface OtelAttributesFormatOptions {
-  /** `JSON.stringify` replacer applied to every value this format stringifies, `errorDetail` included. */
+  /**
+   * `JSON.stringify` replacer applied to every value this format stringifies, `errorDetail`
+   * included. It is called with the object that holds the value as `this`, so it can decide on a
+   * property from the other properties of that object. Return `undefined` to leave the property out.
+   */
   replacer?: Replacer
+
+  /**
+   * The longest string this format writes. A longer one is cut short and ends in `[Truncated]`. Set
+   * it to the backend's limit so that the backend does not cut the value without a marker. By
+   * default every string is written whole. Values that were already strings are never cut. A limit
+   * shorter than the 11-character marker writes as much of the marker as fits.
+   *
+   * @example App Insights keeps 8,192 characters of a custom dimension
+   * ```ts
+   * otelAttributesFormat({ maxAttributeLength: 8192 })
+   * ```
+   */
+  maxAttributeLength?: number
+}
+
+interface Settings {
+  replacer: Replacer | undefined
+  maxAttributeLength: number
+}
+
+const resolveSettings = (opts: OtelAttributesFormatOptions): Settings => ({
+  replacer: opts.replacer,
+  maxAttributeLength: opts.maxAttributeLength ?? Infinity,
+})
+
+/** A format instance keeps one options object for its lifetime, so its settings are resolved once. */
+const settingsCache = new WeakMap<object, Settings>()
+const defaultSettings = resolveSettings({})
+
+const settingsFor = (opts: OtelAttributesFormatOptions | undefined): Settings => {
+  if (!opts) return defaultSettings
+  let settings = settingsCache.get(opts)
+  if (!settings) {
+    settings = resolveSettings(opts)
+    settingsCache.set(opts, settings)
+  }
+  return settings
 }
 
 /** The keys `@opentelemetry/winston-transport` reads an exception from, in the order it tries them. */
@@ -35,38 +79,59 @@ const isDescribableCause = (cause: unknown): boolean =>
       typeof cause.code === 'string' ||
       typeof cause.code === 'number'))
 
-/** Plain JSON for any value: errors serialized, BigInts written as `<n>n`, and never a throw out of the log call. */
-const stringify = (value: unknown, replacer: Replacer | undefined): string => {
+/**
+ * Cuts a string to `max`, ending in `[Truncated]`, without splitting a surrogate pair. A `max`
+ * shorter than the marker gets as much of the marker as fits. A negative or `NaN` `max` cuts nothing.
+ */
+const cap = (text: string, max: number): string => {
+  if (!(text.length > max)) return text
+  if (max < 0) return text
+  if (max < TRUNCATED.length) return TRUNCATED.slice(0, max)
+  let end = max - TRUNCATED.length
+  const last = text.charCodeAt(end - 1)
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1
+  return text.slice(0, end) + TRUNCATED
+}
+
+/** Plain JSON for any value: errors serialized, BigInts written as `<n>n`, the result capped, and never a throw out of the log call. */
+const stringify = (value: unknown, settings: Settings): string => {
+  const { replacer } = settings
   const plain = function (this: unknown, key: string, entry: unknown): unknown {
     const converted = entry instanceof Error ? serializeError(entry) : typeof entry === 'bigint' ? `${entry}n` : entry
     return replacer ? (replacer.call(this, key, converted) as unknown) : converted
   }
+  let json: string
   try {
-    return JSON.stringify(value, plain) ?? String(value)
+    json = JSON.stringify(value, plain) ?? String(value)
   } catch {
-    return '[Unserializable]'
+    json = '[Unserializable]'
   }
+  return cap(json, settings.maxAttributeLength)
 }
 
 /** A value that writes itself as a primitive (a `Date`'s ISO string) is kept unquoted, so a query reads it as it is. */
-const flatValue = (value: object, replacer: Replacer | undefined): unknown => {
-  if (!replacer && serializesItself(value)) {
+const flatValue = (value: object, settings: Settings): unknown => {
+  if (!settings.replacer && serializesItself(value)) {
     try {
       const json: unknown = (value as { toJSON: () => unknown }).toJSON()
-      if (json === null || typeof json === 'string' || typeof json === 'number' || typeof json === 'boolean') return json
+      if (typeof json === 'string') return cap(json, settings.maxAttributeLength)
+      if (json === null || typeof json === 'number' || typeof json === 'boolean') return json
     } catch {
       // fall through to the JSON of the value itself
     }
   }
-  return stringify(value, replacer)
+  return stringify(value, settings)
 }
 
 /**
  * Leaves the exception what the logs SDK reads — `name`, `message`, `stack`, and a cause it can
  * describe — and moves the rest of the error to `<key>Detail` as JSON. The SDK takes a truthy `code`
  * over `name` for `exception.type`, so `code` moves too, unless there is no `name` to take its place.
+ *
+ * A `<key>Detail` that is already a string is kept: the error was split by an earlier pass, and
+ * splitting what that pass left would replace the detail with the cause alone.
  */
-const splitException = (record: Record<string, unknown>, key: string, error: Record<string, unknown>, replacer: Replacer | undefined) => {
+const splitException = (record: Record<string, unknown>, key: string, error: Record<string, unknown>, settings: Settings) => {
   const exception: Record<string, unknown> = {}
   const detail: Record<string, unknown> = {}
   for (const [field, value] of Object.entries(error)) {
@@ -79,7 +144,9 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
     delete detail.code
   }
   record[key] = exception
-  if (Object.keys(detail).length > 0) record[`${key}Detail`] = stringify(detail, replacer)
+  const detailKey = `${key}Detail`
+  if (typeof record[detailKey] === 'string') return
+  if (Object.keys(detail).length > 0) record[detailKey] = stringify(detail, settings)
 }
 
 /**
@@ -98,21 +165,29 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
  * turn them into nested map attributes, which most backends — Azure Log Analytics included — do not
  * index. Scalars are left alone. A `Date` becomes its ISO string, unquoted.
  *
- * Use it on the transport to keep other transports' output nested, or through
- * `createLogger({ flatten: 'otel' })` when the transport is added for you, as `WinstonInstrumentation`
- * does. For a transport before 0.29, which has no exception handling, use `jsonStringifyValuesFormat`.
+ * OpenTelemetry has no severity for the custom `audit` level, so the format exports an `audit`
+ * record at `info` severity. It copies every record's level onto `logLevel`, which keeps `audit`
+ * apart from `info`, and `debug` apart from `verbose`, in a backend that stores only the severity.
+ * See {@link OtelAttributesFormatOptions} to cap the strings it writes or pass a replacer.
  *
- * Mutates `info` in place, so winston's Symbol-keyed routing properties are preserved.
+ * `createLogger({ otel: true })` puts it on the OpenTelemetry transport, so other transports keep
+ * their nested output. Use it directly only in a format chain you build yourself, on that
+ * transport's own format: there the audit mapping runs after the transport's level filter, so it
+ * never drops a record.
+ *
+ * Mutates `info` in place, so winston's Symbol-keyed routing properties are preserved. Nested
+ * values are never changed.
  */
 export const otelAttributesFormat = format((info, opts) => {
-  const { replacer } = (opts ?? {}) as OtelAttributesFormatOptions
+  const settings = settingsFor(opts as OtelAttributesFormatOptions | undefined)
+  applyAuditLevelMapping(info)
   const record = info as unknown as Record<string, unknown>
   const lifted = EXCEPTION_KEYS.find((key) => isExceptionCandidate(record[key]))
   for (const key of Object.keys(record)) {
     const value = record[key]
     if (!isObject(value)) continue
-    if (key === lifted) splitException(record, key, value instanceof Error ? serializeError(value) : value, replacer)
-    else record[key] = flatValue(value, replacer)
+    if (key === lifted) splitException(record, key, value instanceof Error ? serializeError(value) : value, settings)
+    else record[key] = flatValue(value, settings)
   }
   return info
 })
