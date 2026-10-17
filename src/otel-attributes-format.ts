@@ -170,10 +170,10 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
  * apart from `info`, and `debug` apart from `verbose`, in a backend that stores only the severity.
  * See {@link OtelAttributesFormatOptions} to cap the strings it writes or pass a replacer.
  *
- * Put it on the OpenTelemetry transport to keep other transports' output nested, or use
- * `createLogger({ otel: true })` when the transport is added for you, as `WinstonInstrumentation`
- * does. On the transport the audit mapping runs after the transport's level filter, so it can never
- * drop a record.
+ * `createLogger({ otel: true })` puts it on the OpenTelemetry transport, so other transports keep
+ * their nested output. Use it directly only in a format chain you build yourself, on that
+ * transport's own format: there the audit mapping runs after the transport's level filter, so it
+ * never drops a record.
  *
  * Mutates `info` in place, so winston's Symbol-keyed routing properties are preserved. Nested
  * values are never changed.

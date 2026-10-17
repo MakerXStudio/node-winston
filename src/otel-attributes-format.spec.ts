@@ -199,7 +199,7 @@ describe('otelAttributesFormat — length cap', () => {
 })
 
 describe('otelAttributesFormat — shared state', () => {
-  it('changes no nested value, so a transport placement leaves its siblings their own objects', () => {
+  it('changes no nested value, so other transports keep their own objects', () => {
     const error = withAttempts()
     const ctx = { inner: { a: 1 }, list: [{ b: 2 }] }
     const before = structuredClone({ error, ctx })
