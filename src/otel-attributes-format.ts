@@ -174,7 +174,7 @@ const splitException = (record: Record<string, unknown>, key: string, error: Rec
  * turn them into nested map attributes, which most backends — Azure Log Analytics included — do not
  * index. Scalars are left alone. A `Date` becomes its ISO string, unquoted.
  *
- * OpenTelemetry has no severity for winston's `audit` level, so by default the format exports an
+ * OpenTelemetry has no severity for the custom `audit` level, so by default the format exports an
  * `audit` record at `info` severity, with every record's level on `logLevel`. See
  * {@link OtelAttributesFormatOptions} to turn that off, cap the strings it writes, or pass a replacer.
  *

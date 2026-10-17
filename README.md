@@ -311,7 +311,7 @@ Pass options as `otel: { … }`.
 
 ### Audit severity
 
-OpenTelemetry's log spec has no severity for winston's `audit` level. Azure Monitor ignores a record without a severity, and a `logSeverity` filter drops it. So the format exports an `audit` record at `info` severity, and copies every record's level onto `logLevel` so that the original survives. In Azure Log Analytics, query it as `customDimensions.logLevel == "audit"`.
+OpenTelemetry's log spec has no severity for the custom `audit` level. Azure Monitor ignores a record without a severity, and a `logSeverity` filter drops it. So the format exports an `audit` record at `info` severity, and copies every record's level onto `logLevel` so that the original survives. In Azure Log Analytics, query it as `customDimensions.logLevel == "audit"`.
 
 The format runs on the OpenTelemetry transport only, after that transport's level filter. A logger or transport set to `level: 'audit'` keeps audit records, and the console still shows `"level": "audit"`.
 

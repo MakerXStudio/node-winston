@@ -5,7 +5,7 @@ import { applyAuditLevelMapping } from './audit-level'
  * OTEL's log spec defines a fixed severity enumeration (trace/debug/info/warn/error/fatal).
  * `@opentelemetry/winston-transport` derives `severityText` / `severityNumber` from Winston's
  * triple-beam `LEVEL` symbol and strips the string `level` property before building attributes,
- * so Winston's custom `audit` level arrives at an OTEL backend with no severity and no queryable
+ * so the custom `audit` level arrives at an OTEL backend with no severity and no queryable
  * record of the original level. Azure Monitor / Log Analytics ignores records without a mapped
  * severity, and a transport `logSeverity` filter drops them.
  *
